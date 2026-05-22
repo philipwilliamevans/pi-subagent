@@ -13,8 +13,8 @@
  *   - fork: child gets a forked snapshot of current session context + task prompt.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { type AgentConfig, discoverAgents } from "./agents.js";
 import { renderCall, renderResult } from "./render.js";
 import { getResultSummaryText } from "./runner-events.js";
