@@ -15,7 +15,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type AgentConfig, discoverAgents } from "./agents.js";
+import { type AgentConfig, discoverAgents, discoverAgentsWithStarter } from "./agents.js";
 import { renderCall, renderResult } from "./render.js";
 import { getResultSummaryText } from "./runner-events.js";
 import { mapConcurrent, runAgent } from "./runner.js";
@@ -389,17 +389,30 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     if (!canDelegate) return;
 
-    const discovery = discoverAgents(ctx.cwd, "both");
+    const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+    const discovery = starterDiscovery.discovery;
     discoveredAgents = discovery.agents;
 
-    if (discoveredAgents.length > 0 && ctx.hasUI) {
-      const list = discoveredAgents
-        .map((a) => `  - ${a.name} (${a.source})`)
-        .join("\n");
-      ctx.ui.notify(
-        `Found ${discoveredAgents.length} subagent(s):\n${list}`,
-        "info",
-      );
+    if (ctx.hasUI) {
+      if (starterDiscovery.createdAgentPath) {
+        ctx.ui.notify(
+          `Created starter subagent "explorer" at:\n${starterDiscovery.createdAgentPath}\n\nEdit this file or add more agents in the same directory to customize delegation.`,
+          "info",
+        );
+      } else if (starterDiscovery.error && discoveredAgents.length === 0) {
+        ctx.ui.notify(
+          `No subagents found. ${starterDiscovery.error}`,
+          "info",
+        );
+      } else if (discoveredAgents.length > 0) {
+        const list = discoveredAgents
+          .map((a) => `  - ${a.name} (${a.source})`)
+          .join("\n");
+        ctx.ui.notify(
+          `Found ${discoveredAgents.length} subagent(s):\n${list}`,
+          "info",
+        );
+      }
     }
   });
 
@@ -473,7 +486,8 @@ Use single mode for one task, parallel mode when tasks are independent and can r
       parameters: SubagentParams,
 
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
-        const discovery = discoverAgents(ctx.cwd, "both");
+        const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+        const discovery = starterDiscovery.discovery;
         const { agents } = discovery;
 
         const delegationMode = parseDelegationMode(params.mode);

@@ -125,6 +125,15 @@ Subagents are defined as Markdown files with YAML frontmatter.
 
 `PI_CODING_AGENT_DIR` follows Pi's config-dir override semantics: when it is set, the extension uses `$PI_CODING_AGENT_DIR/agents` as the user/global agent directory instead of `~/.pi/agent/agents`. Project agents are still loaded in addition to the active user/global directory, and project agents win on name conflicts. When project agents are requested, Pi will prompt for confirmation before running them.
 
+#### Starter Agent
+
+If no user or project subagents can be found, `pi-subagent` creates a starter user agent named `explorer` in the active user agents directory:
+
+- `~/.pi/agent/agents/explorer.md` by default
+- `$PI_CODING_AGENT_DIR/agents/explorer.md` when `PI_CODING_AGENT_DIR` is set
+
+The starter is read-only (`read`, `grep`, `find`, `ls`) and is meant for focused codebase exploration. Existing files are never overwritten. If you delete every subagent, the starter will be recreated the next time Pi starts with this extension.
+
 Example agent (`~/.pi/agent/agents/writer.md`):
 
 ```markdown
