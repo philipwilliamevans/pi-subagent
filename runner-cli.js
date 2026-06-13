@@ -48,6 +48,7 @@ export function parseInheritedCliArgs(argv) {
   let fallbackThinking;
   let fallbackTools;
   let fallbackNoTools = false;
+  let sessionDir;
 
   let i = 2; // skip executable + script name
   while (i < argv.length) {
@@ -74,6 +75,10 @@ export function parseInheritedCliArgs(argv) {
       [
         "--mode",
         "--session",
+        "--session-id",
+        "--fork",
+        "--name",
+        "-n",
         "--append-system-prompt",
         "--export",
         "--subagent-max-depth",
@@ -136,7 +141,8 @@ export function parseInheritedCliArgs(argv) {
     if (flagName === "--session-dir") {
       const [value, skip] = getValue();
       if (value !== undefined) {
-        alwaysProxy.push(flagName, resolvePathArg(value, { alwaysResolveRelative: true }));
+        sessionDir = resolvePathArg(value, { alwaysResolveRelative: true });
+        alwaysProxy.push(flagName, sessionDir);
       }
       i += skip;
       continue;
@@ -221,5 +227,6 @@ export function parseInheritedCliArgs(argv) {
     fallbackThinking,
     fallbackTools,
     fallbackNoTools,
+    sessionDir,
   };
 }

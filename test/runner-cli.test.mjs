@@ -154,3 +154,20 @@ test("inherits no-tools when the parent disabled tools", () => {
   assert.equal(parsed.fallbackTools, undefined);
   assert.equal(parsed.fallbackNoTools, true);
 });
+
+test("does not inherit parent session identity flags", () => {
+  const parsed = parseInheritedCliArgs([
+    "/usr/bin/node",
+    "pi",
+    "--session-id",
+    "parent-session",
+    "--fork",
+    "/tmp/parent.jsonl",
+    "--name",
+    "Parent Session",
+    "--provider",
+    "openrouter",
+  ]);
+
+  assert.deepEqual(parsed.alwaysProxy, ["--provider", "openrouter"]);
+});

@@ -16,7 +16,8 @@ function makeResult() {
   return {
     agent: "oracle",
     agentSource: "user",
-    task: "repro",
+    prompt: "repro",
+    initialContext: "empty",
     exitCode: -1,
     messages: [],
     stderr: "",

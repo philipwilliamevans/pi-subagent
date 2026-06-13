@@ -5,11 +5,21 @@
 import type { Message } from "@earendil-works/pi-ai";
 import { getFinalAssistantText } from "./runner-events.js";
 
-/** Context mode for delegated runs. */
-export type DelegationMode = "spawn" | "fork";
+/** Initial context for a newly-created subagent conversation. */
+export type InitialContext = "empty" | "parent";
 
-/** Default context mode for delegated runs. */
-export const DEFAULT_DELEGATION_MODE: DelegationMode = "spawn";
+/** Default initial context for delegated calls. */
+export const DEFAULT_INITIAL_CONTEXT: InitialContext = "empty";
+
+/** Metadata for a named persistent subagent session. */
+export interface SubagentSessionDetails {
+	handle: string;
+	id: string;
+	name: string;
+	cwd: string;
+	created: boolean;
+	initialContextApplied: InitialContext | null;
+}
 
 /** Aggregated token usage from a subagent run. */
 export interface UsageStats {
@@ -22,11 +32,14 @@ export interface UsageStats {
 	turns: number;
 }
 
-/** Result of a single subagent invocation. */
+/** Result of a single subagent call. */
 export interface SingleResult {
+	callIndex?: number;
 	agent: string;
 	agentSource: "user" | "project" | "unknown";
-	task: string;
+	prompt: string;
+	initialContext: InitialContext;
+	session?: SubagentSessionDetails;
 	exitCode: number;
 	messages: Message[];
 	stderr: string;
@@ -39,8 +52,6 @@ export interface SingleResult {
 
 /** Metadata attached to every tool result for rendering. */
 export interface SubagentDetails {
-	mode: "single" | "parallel";
-	delegationMode: DelegationMode;
 	projectAgentsDir: string | null;
 	results: SingleResult[];
 }

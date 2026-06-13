@@ -13,9 +13,10 @@ import type { AgentConfig } from "./agents.js";
 import { parseInheritedCliArgs } from "./runner-cli.js";
 import { processPiJsonLine } from "./runner-events.js";
 import {
-  type DelegationMode,
+  type InitialContext,
   type SingleResult,
   type SubagentDetails,
+  type SubagentSessionDetails,
   emptyUsage,
   getFinalOutput,
   normalizeCompletedResult,
@@ -63,13 +64,13 @@ function writePromptToTempFile(
   return { dir: tmpDir, filePath };
 }
 
-function writeForkSessionToTempFile(
+function writeSessionSnapshotToTempFile(
   agentName: string,
   sessionJsonl: string,
 ): { dir: string; filePath: string } {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
-  const filePath = path.join(tmpDir, `fork-${safeName}.jsonl`);
+  const filePath = path.join(tmpDir, `parent-${safeName}.jsonl`);
   fs.writeFileSync(filePath, sessionJsonl, { encoding: "utf-8", mode: 0o600 });
   return { dir: tmpDir, filePath };
 }
@@ -92,9 +93,11 @@ const inheritedCliArgs = parseInheritedCliArgs(process.argv);
 function buildPiArgs(
   agent: AgentConfig,
   systemPromptPath: string | null,
-  task: string,
-  delegationMode: DelegationMode,
-  forkSessionPath: string | null,
+  prompt: string,
+  initialContext: InitialContext,
+  parentSessionPath: string | null,
+  session: SubagentSessionDetails | undefined,
+  persistentSessionDir: string | undefined,
 ): string[] {
   const args: string[] = [
     "--mode",
@@ -104,10 +107,20 @@ function buildPiArgs(
     "-p",
   ];
 
-  if (delegationMode === "spawn") {
+  if (session && persistentSessionDir && !inheritedCliArgs.sessionDir) {
+    args.push("--session-dir", persistentSessionDir);
+  }
+
+  if (session) {
+    if (session.created && initialContext === "parent") {
+      if (parentSessionPath) args.push("--fork", parentSessionPath);
+    }
+    args.push("--session-id", session.id);
+    if (session.created) args.push("--name", session.name);
+  } else if (initialContext === "parent") {
+    if (parentSessionPath) args.push("--session", parentSessionPath);
+  } else {
     args.push("--no-session");
-  } else if (forkSessionPath) {
-    args.push("--session", forkSessionPath);
   }
 
   const model = agent.model ?? inheritedCliArgs.fallbackModel;
@@ -127,7 +140,7 @@ function buildPiArgs(
   }
 
   if (systemPromptPath) args.push("--append-system-prompt", systemPromptPath);
-  args.push(`Task: ${task}`);
+  args.push(prompt);
   return args;
 }
 
@@ -136,20 +149,26 @@ function buildPiArgs(
 // ---------------------------------------------------------------------------
 
 export interface RunAgentOptions {
-  /** Fallback working directory when the task doesn't specify one. */
+  /** Fallback working directory when the call doesn't specify one. */
   cwd: string;
   /** All available agent configs. */
   agents: AgentConfig[];
+  /** Original call index in the tool invocation. */
+  callIndex: number;
   /** Name of the agent to run. */
   agentName: string;
-  /** Task description. */
-  task: string;
-  /** Optional override working directory. */
-  taskCwd?: string;
-  /** Context mode: spawn (fresh) or fork (session snapshot + task). */
-  delegationMode: DelegationMode;
-  /** Serialized parent session snapshot used when delegationMode is "fork". */
-  forkSessionSnapshotJsonl?: string;
+  /** Prompt sent verbatim to the subagent. */
+  prompt: string;
+  /** Effective working directory for this process. */
+  callCwd?: string;
+  /** Initial context for newly-created child conversations. */
+  initialContext: InitialContext;
+  /** Serialized parent session snapshot, used when initialContext is "parent". */
+  parentSessionSnapshotJsonl?: string;
+  /** Optional named persistent subagent session. */
+  session?: SubagentSessionDetails;
+  /** Optional persistent session directory inherited from the parent runtime. */
+  persistentSessionDir?: string;
   /** Current delegation depth of the caller process. */
   parentDepth: number;
   /** Delegation stack from the caller process (ancestor agent names). */
@@ -175,11 +194,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
   const {
     cwd,
     agents,
+    callIndex,
     agentName,
-    task,
-    taskCwd,
-    delegationMode,
-    forkSessionSnapshotJsonl,
+    prompt,
+    callCwd,
+    initialContext,
+    parentSessionSnapshotJsonl,
+    session,
+    persistentSessionDir,
     parentDepth,
     parentAgentStack,
     maxDepth,
@@ -193,40 +215,49 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
   if (!agent) {
     const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
     return {
+      callIndex,
       agent: agentName,
       agentSource: "unknown",
-      task,
+      prompt,
+      initialContext,
+      session,
       exitCode: 1,
       messages: [],
       stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
       usage: emptyUsage(),
+      stopReason: "error",
+      errorMessage: `Unknown agent: "${agentName}". Available agents: ${available}.`,
     };
   }
 
-  if (
-    delegationMode === "fork" &&
-    (!forkSessionSnapshotJsonl || !forkSessionSnapshotJsonl.trim())
-  ) {
+  const needsParentSnapshot = initialContext === "parent" && (!session || session.created);
+  if (needsParentSnapshot && (!parentSessionSnapshotJsonl || !parentSessionSnapshotJsonl.trim())) {
+    const message =
+      "Cannot run with initialContext=\"parent\": missing parent session snapshot context.";
     return {
+      callIndex,
       agent: agentName,
       agentSource: agent.source,
-      task,
+      prompt,
+      initialContext,
+      session,
       exitCode: 1,
       messages: [],
-      stderr:
-        "Cannot run in fork mode: missing parent session snapshot context.",
+      stderr: message,
       usage: emptyUsage(),
       model: agent.model,
       stopReason: "error",
-      errorMessage:
-        "Cannot run in fork mode: missing parent session snapshot context.",
+      errorMessage: message,
     };
   }
 
   const result: SingleResult = {
+    callIndex,
     agent: agentName,
     agentSource: agent.source,
-    task,
+    prompt,
+    initialContext,
+    session,
     exitCode: -1,
     messages: [],
     stderr: "",
@@ -246,7 +277,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     });
   };
 
-  // Write system prompt to temp file if needed
+  // Write system prompt to temp file if needed.
   let promptTmpDir: string | null = null;
   let promptTmpPath: string | null = null;
   if (agent.systemPrompt.trim()) {
@@ -255,22 +286,24 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     promptTmpPath = tmp.filePath;
   }
 
-  // Write forked session snapshot if needed
-  let forkSessionTmpDir: string | null = null;
-  let forkSessionTmpPath: string | null = null;
-  if (delegationMode === "fork" && forkSessionSnapshotJsonl) {
-    const tmp = writeForkSessionToTempFile(agent.name, forkSessionSnapshotJsonl);
-    forkSessionTmpDir = tmp.dir;
-    forkSessionTmpPath = tmp.filePath;
+  // Write parent session snapshot if this call needs one.
+  let parentSessionTmpDir: string | null = null;
+  let parentSessionTmpPath: string | null = null;
+  if (needsParentSnapshot && parentSessionSnapshotJsonl) {
+    const tmp = writeSessionSnapshotToTempFile(agent.name, parentSessionSnapshotJsonl);
+    parentSessionTmpDir = tmp.dir;
+    parentSessionTmpPath = tmp.filePath;
   }
 
   try {
     const piArgs = buildPiArgs(
       agent,
       promptTmpPath,
-      task,
-      delegationMode,
-      forkSessionTmpPath,
+      prompt,
+      initialContext,
+      parentSessionTmpPath,
+      session,
+      persistentSessionDir,
     );
     let wasAborted = false;
 
@@ -280,7 +313,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       const propagatedStack = [...parentAgentStack, agentName];
       const { command, prefixArgs } = resolvePiSpawn();
       const proc = spawn(command, [...prefixArgs, ...piArgs], {
-        cwd: taskCwd ?? cwd,
+        cwd: callCwd ?? cwd,
         shell: false,
         stdio: ["pipe", "pipe", "pipe"],
         env: {
@@ -392,7 +425,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         finish(1);
       });
 
-      // Abort handling
+      // Abort handling.
       if (signal) {
         abortHandler = () => {
           if (didClose || settled) return;
@@ -408,7 +441,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     return normalizeCompletedResult(result, wasAborted);
   } finally {
     cleanupTempDir(promptTmpDir);
-    cleanupTempDir(forkSessionTmpDir);
+    cleanupTempDir(parentSessionTmpDir);
   }
 }
 

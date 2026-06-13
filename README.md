@@ -1,18 +1,20 @@
 # Pi Subagent
 
-**Delegate tasks to specialized subagents with configurable context modes (`spawn` / `fork`).**
+**Delegate prompts to specialized Pi subagents, optionally continuing named subagent sessions.**
 
-There are many subagent extensions for pi, this one is mine.
+There are many subagent extensions for Pi; this one is mine.
 
 ## Why Pi Subagent
 
-**Specialization** — Use tailored agents for specific tasks like refactoring, documentation, or research.
+**Specialization** — Use tailored agents for review, research, testing, documentation, exploration, and other focused work.
 
-**Context Control** — Choose `spawn` (fresh context) or `fork` (inherit current session context), depending on the task.
+**Flexible Context** — Start a child conversation empty, or seed a newly-created child conversation from the current parent session.
 
-**Parallel Execution** — Run multiple agents at once.
+**Named Continuation** — Give a subagent call a logical `session` handle and continue that same specialist conversation later.
 
-**A Simpler Fork** — This extension intentionally trims features from other implementations (like chaining and scope selectors) to keep the surface area small and predictable. If you want the minimal, “just delegate” experience, this is it.
+**Parallel Execution** — Run one or many subagent calls with the same `calls` API.
+
+**Small Surface Area** — The extension keeps delegation explicit: choose an agent, send a prompt, optionally name the session.
 
 ## Install
 
@@ -39,28 +41,211 @@ cd pi-subagent
 npm install
 ```
 
-## Configuration
+## Tool API
 
-### Delegation Guards (Depth + Cycle Prevention)
+The tool is named `subagent` and accepts one top-level `calls` array. Use the same shape for one call and many calls.
+
+```json
+{
+  "calls": [
+    {
+      "agent": "explorer",
+      "prompt": "Find where authentication is implemented."
+    }
+  ]
+}
+```
+
+Each call supports:
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `agent` | Yes | — | Exact name of an available subagent. |
+| `prompt` | Yes | — | Non-empty prompt sent verbatim to the subagent. |
+| `cwd` | No | Parent cwd | Working directory for this subagent process. |
+| `initialContext` | No | `"empty"` | `"empty"` starts a newly-created child conversation without parent history. `"parent"` seeds a newly-created child conversation from the current parent session snapshot. Existing named sessions ignore this field. |
+| `session` | No | — | Logical handle for a persistent child Pi session. Use this for multi-turn specialist work. |
+
+Top-level option:
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `confirmProjectAgents` | `true` | Prompt before running repo-controlled project agents from `.pi/agents/`. In non-UI mode, project agents are blocked unless this is set to `false`. |
+
+### Examples
+
+#### One ephemeral call
+
+```json
+{
+  "calls": [
+    {
+      "agent": "explorer",
+      "prompt": "Find where authentication is implemented."
+    }
+  ]
+}
+```
+
+#### Multiple parallel calls
+
+```json
+{
+  "calls": [
+    {
+      "agent": "review",
+      "prompt": "Review correctness risks in the current diff."
+    },
+    {
+      "agent": "testing-audit",
+      "prompt": "Find missing test coverage in the current diff."
+    }
+  ]
+}
+```
+
+#### Named persistent session
+
+Start a durable subagent conversation:
+
+```json
+{
+  "calls": [
+    {
+      "agent": "review",
+      "session": "api-review",
+      "prompt": "Start a review plan for the API changes."
+    }
+  ]
+}
+```
+
+Continue the same specialist conversation later:
+
+```json
+{
+  "calls": [
+    {
+      "agent": "review",
+      "session": "api-review",
+      "prompt": "Now review the implementation against your earlier plan."
+    }
+  ]
+}
+```
+
+#### Parent-seeded named session
+
+```json
+{
+  "calls": [
+    {
+      "agent": "review",
+      "session": "api-review",
+      "initialContext": "parent",
+      "prompt": "Use the current parent conversation as context and start a review plan."
+    }
+  ]
+}
+```
+
+If the named session already exists, the subagent continues it and `initialContext` is ignored. If it does not exist, the new child session is seeded from the parent snapshot.
+
+## Named Session Semantics
+
+A `session` value is a logical handle, not a Pi display name and not a raw Pi session ID.
+
+The extension derives an opaque Pi session ID from:
+
+```text
+pi-subagent/v1 + parentSessionId + effectiveCwd + agentName + sessionHandle
+```
+
+The generated Pi session ID looks like:
+
+```text
+subagent.<hash>
+```
+
+The human-readable Pi display name is:
+
+```text
+subagent: <agent> · <handle>
+```
+
+Important rules:
+
+- Same `session` handle + same parent session + same effective cwd + same agent continues the same child session.
+- A new top-level Pi parent session creates a new subagent session namespace, even in the same repository.
+- Same `session` handle with different agents resolves to different child sessions.
+- Same `session` handle with different effective cwd resolves to different child sessions.
+- A persistent child session can be used by only one running call at a time.
+- If two calls in the same tool invocation resolve to the same persistent session, the whole request is rejected before any child process starts.
+- To start a fresh durable conversation, choose a new `session` handle.
+
+## Initial Context
+
+`initialContext` controls only how a newly-created child conversation starts:
+
+- `"empty"` — start without parent conversation history.
+- `"parent"` — copy the current parent session branch into the new child conversation before sending the prompt.
+
+Existing named sessions always continue their own history and ignore `initialContext`.
+
+Calls without `session` are ephemeral:
+
+- no `session`, `initialContext: "empty"` — fresh temporary child conversation
+- no `session`, `initialContext: "parent"` — temporary child conversation seeded from the parent snapshot
+- with `session` — persistent child Pi session
+
+When multiple calls need `initialContext: "parent"`, they all receive the same parent snapshot captured at the start of the tool invocation.
+
+## Result Format
+
+The main agent receives a uniform wrapper for one or many calls:
+
+```text
+2/2 succeeded
+
+[0: review session=api-review] completed:
+...
+
+[1: testing-audit] completed:
+...
+```
+
+If any call fails, the tool result is marked as an error while still returning every call's output:
+
+```text
+1/2 succeeded
+
+[0: review session=api-review] completed:
+...
+
+[1: testing-audit] failed:
+Unknown agent: "testing-audit".
+```
+
+Full session metadata, including generated session ID, effective cwd, creation status, and applied initial context, is available in the tool result details and TUI expanded view.
+
+## Delegation Guards
 
 By default, this extension enforces two runtime guards:
 
 1. **Depth guard** (`--subagent-max-depth`, default `3`)
-   - Main agent starts at depth `0`
-   - Delegation is allowed while `currentDepth < maxDepth`
-   - With default depth `3`: depth `0`, `1`, and `2` can delegate; depth `3` cannot
+   - Main agent starts at depth `0`.
+   - Delegation is allowed while `currentDepth < maxDepth`.
+   - With default depth `3`: depth `0`, `1`, and `2` can delegate; depth `3` cannot.
 2. **Cycle guard** (`--subagent-prevent-cycles`, default `true`)
-   - Blocks delegating to any agent name already present in the current delegation stack
-   - Prevents self-recursion (`writer -> writer`) and loops (`planner -> reviewer -> planner`)
+   - Blocks delegating to any agent name already present in the current delegation stack.
+   - Prevents self-recursion and loops.
 
-You can configure depth with either:
+Configure depth with either:
 
 - CLI flag: `--subagent-max-depth <n>`
 - Environment variable: `PI_SUBAGENT_MAX_DEPTH=<n>`
 
-`n` must be a non-negative integer.
-
-You can configure cycle prevention with either:
+Configure cycle prevention with either:
 
 - CLI flag: `--subagent-prevent-cycles` / `--no-subagent-prevent-cycles`
 - Environment variable: `PI_SUBAGENT_PREVENT_CYCLES=true|false`
@@ -69,216 +254,104 @@ Internal env vars managed by the extension and propagated to child processes:
 
 - `PI_SUBAGENT_DEPTH`
 - `PI_SUBAGENT_MAX_DEPTH`
-- `PI_SUBAGENT_STACK` (JSON array of ancestor agent names, e.g. `["scout","planner"]`)
+- `PI_SUBAGENT_STACK` (JSON array of ancestor agent names)
 - `PI_SUBAGENT_PREVENT_CYCLES`
 
-Recommended extension-integration note:
+Recommended integration note: if another extension needs to detect whether it is running inside a delegated subagent process, check `PI_SUBAGENT_DEPTH`. Treat `PI_SUBAGENT_DEPTH > 0` as "this pi process is a subagent".
 
-If another extension needs to detect whether it is running inside a delegated subagent process, check `PI_SUBAGENT_DEPTH`. Treat `PI_SUBAGENT_DEPTH > 0` as "this pi process is a subagent". This is the recommended way to suppress parent-only behavior such as bells, desktop notifications, or other attention-grabbing signals.
-
-Examples:
-
-```bash
-# Default behavior: depth 3 + cycle prevention enabled
-pi
-
-# Restrict to one nested level (main -> child -> grandchild)
-pi --subagent-max-depth 2
-
-# Disable subagent delegation entirely
-pi --subagent-max-depth 0
-
-# Allow depth 3 but disable cycle prevention (not recommended)
-pi --subagent-max-depth 3 --no-subagent-prevent-cycles
-```
-
-### Context Mode (`spawn` vs `fork`)
-
-`subagent` supports a top-level `mode` switch:
-
-- `spawn` (default) — Child receives only the task string (`Task: ...`). Best for isolated, reproducible work; typically lower token/cost and less context leakage.
-- `fork` — Child receives a forked snapshot of the current session context **plus** the task string. Best for follow-up work that depends on prior context; typically higher token/cost and may include sensitive context.
-
-Quick rule of thumb:
-
-- Start with `spawn` for one-off tasks.
-- Use `fork` when the delegated task depends on the current session's prior discussion, reads, or decisions.
-
-Examples:
-
-```json
-{ "agent": "writer", "task": "Document the API", "mode": "spawn" }
-```
-
-```json
-{ "agent": "review", "task": "Double-check this migration", "mode": "fork" }
-```
-
-If omitted, mode defaults to `spawn`.
-
-### Subagent Definitions
+## Subagent Definitions
 
 Subagents are defined as Markdown files with YAML frontmatter.
 
-**User Agents:** `~/.pi/agent/agents/*.md` by default, or `$PI_CODING_AGENT_DIR/agents/*.md` when `PI_CODING_AGENT_DIR` is set
-**Project Agents:** `.pi/agents/*.md`
+**User agents:** `~/.pi/agent/agents/*.md` by default, or `$PI_CODING_AGENT_DIR/agents/*.md` when `PI_CODING_AGENT_DIR` is set.
 
-`PI_CODING_AGENT_DIR` follows Pi's config-dir override semantics: when it is set, the extension uses `$PI_CODING_AGENT_DIR/agents` as the user/global agent directory instead of `~/.pi/agent/agents`. Project agents are still loaded in addition to the active user/global directory, and project agents win on name conflicts. When project agents are requested, Pi will prompt for confirmation before running them.
+**Project agents:** `.pi/agents/*.md`.
 
-#### Starter Agent
+Project agents win on name conflicts. When project agents are requested, Pi will prompt for confirmation before running them unless `confirmProjectAgents` is set to `false`.
+
+### Starter Agent
 
 If no user or project subagents can be found, `pi-subagent` creates a starter user agent named `explorer` in the active user agents directory:
 
 - `~/.pi/agent/agents/explorer.md` by default
 - `$PI_CODING_AGENT_DIR/agents/explorer.md` when `PI_CODING_AGENT_DIR` is set
 
-The starter is read-only (`read`, `grep`, `find`, `ls`) and is meant for focused codebase exploration. Existing files are never overwritten. If you delete every subagent, the starter will be recreated the next time Pi starts with this extension.
+The starter is read-only (`read`, `grep`, `find`, `ls`) and is meant for focused codebase exploration. Existing files are never overwritten.
 
-Example agent (`~/.pi/agent/agents/writer.md`):
+### Example Agent
 
 ```markdown
 ---
 name: writer
 description: Expert technical writer and editor
 model: anthropic/claude-3-5-sonnet
+thinking: medium
 tools: read, write
 ---
 
-You are an expert technical writer. Your task is to improve the clarity and conciseness of the provided text.
+You are an expert technical writer. Improve clarity and concision while preserving technical accuracy.
 ```
-
-Note: this repository includes a sample agent in `agents/oracle.md` for reference.
 
 ### Frontmatter Fields
 
-| Field         | Required | Default                          | Description                                                                                                                                                                |
-| ------------- | -------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`        | Yes      | —                                | Agent identifier used in tool calls (must match exactly)                                                                                                                   |
-| `description` | Yes      | —                                | What the agent does (shown to the main agent)                                                                                                                              |
-| `model`       | No       | Uses the default pi model        | Overrides the model for this agent. You can include a provider prefix (e.g. `anthropic/claude-3-5-sonnet` or `openrouter/claude-3.5-sonnet`) to force a specific provider. |
-| `thinking`    | No       | Uses Pi's default thinking level | Sets the thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). Equivalent to `--thinking`.                                                                  |
-| `tools`       | No       | `read,bash,edit,write`           | Comma-separated list of **built-in** tools to enable for this agent. If omitted, defaults apply.                                                                           |
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `name` | Yes | — | Agent identifier used in tool calls. |
+| `description` | Yes | — | What the agent does; shown to the main agent. |
+| `model` | No | Parent/default Pi model | Overrides the model for this agent. Supports provider-prefixed values such as `anthropic/claude-3-5-sonnet`. |
+| `thinking` | No | Parent/default Pi thinking level | Sets the thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). |
+| `tools` | No | `read,bash,edit,write` | Comma-separated list of built-in tools to enable for this agent. |
 
 Notes:
 
-- `model` accepts `provider/model` syntax — this is a Pi feature. Use it when multiple providers offer the same model ID.
-- `thinking` uses the same values as Pi's `--thinking` flag; it's recommended to set it explicitly since thinking support varies by model.
-- `tools` only controls built-in tools. Extension tools remain available unless extensions are disabled.
-- The Markdown body below the frontmatter becomes the agent's system prompt and is **appended** to Pi's default system prompt (it does **not** replace it).
-
-### Writing a Good Agent File
-
-- **Description matters** — the main agent uses the `description` to decide which subagent to call, so be specific about what the agent is good at.
-- **Tool scope is optional but helpful** — reducing tools can keep the agent focused, but you can leave defaults if unsure.
-- **Model + thinking is the power combo** — selecting the right model and thinking level is often the biggest quality boost.
+- `tools` controls built-in tools. Extension tools remain available unless extensions are disabled.
+- The Markdown body becomes the agent's system prompt and is appended to Pi's default system prompt.
+- Agent files are read when the tool runs; continued named sessions use the current definition of the agent name.
 
 ### Available Built-in Tools
 
-Available Tools (default: `read`, `bash`, `edit`, `write`):
+Available tools by default: `read`, `bash`, `edit`, `write`.
 
-- `read` — Read file contents
-- `bash` — Execute bash commands
-- `edit` — Edit files with find/replace
-- `write` — Write files (creates/overwrites)
-- `grep` — Search file contents (read-only, off by default)
-- `find` — Find files by glob pattern (read-only, off by default)
-- `ls` — List directory contents (read-only, off by default)
+Optional built-in tools:
 
-Tip: for a read-only tool selection, use `read,find,ls,grep`. As soon as you include `edit`, `write`, or `bash`, the agent can practically go wild.
+- `grep` — Search file contents
+- `find` — Find files by glob pattern
+- `ls` — List directory contents
+
+For a read-only agent, use `tools: read,find,ls,grep`.
 
 ## How Communication Works
 
-### The Isolation Model
+Each subagent runs in a separate `pi` process:
 
-Each subagent always runs in a **separate `pi` process**:
+- No shared memory/state with the parent process.
+- No visibility into sibling subagents.
+- Its own model/tool/runtime loop.
+- Started with `PI_OFFLINE=1` to skip startup network operations and reduce latency.
+- Inherits relevant parent CLI configuration such as extensions, provider/theme/skill flags, model/thinking/tool defaults, and custom session storage when applicable.
 
-- ❌ No shared memory/state with the parent process
-- ❌ No visibility into sibling subagents
-- ✅ Its own model/tool/runtime loop
-- ✅ Started with `PI_OFFLINE=1` to skip startup network operations and reduce spawn latency
-- ✅ Inherits relevant parent CLI configuration such as extensions, provider/theme/skill flags, resolves inherited relative resource paths against the parent cwd, and reuses parent `--model` / `--thinking` / `--tools` values when the agent file does not override them
-
-What it can see depends on `mode`:
-
-- `spawn` (default)
-  - ✅ Receives: subagent system prompt + `Task: ...`
-  - ❌ Does **not** receive parent session history
-- `fork`
-  - ✅ Receives: forked snapshot of current parent session context + `Task: ...`
-
-### What Gets Sent to Subagents
-
-#### `spawn` mode (default)
-
-`subagent({ agent: "writer", task: "Document the API" })` sends:
-
-```
-[System Prompt from ~/.pi/agent/agents/writer.md]
-
-User: Task: Document the API
-```
-
-No parent conversation history is included. In `spawn`, include all required context in `task`.
-
-#### `fork` mode
-
-`subagent({ agent: "writer", task: "Document the API", mode: "fork" })` sends:
-
-```
-[Forked snapshot of current session context]
-[System Prompt from ~/.pi/agent/agents/writer.md]
-
-User: Task: Document the API
-```
-
-Note: `fork` copies session context, not transient runtime-only prompt mutations from the parent process.
-
-### What Comes Back to the Main Agent
-
-| Data                        | Main Agent Sees          | TUI Shows              |
-| --------------------------- | ------------------------ | ---------------------- |
-| Final text output           | ✅ Yes — full, unbounded | ✅ Yes                 |
-| Tool calls made by subagent | ❌ No                    | ✅ Yes (expanded view) |
-| Token usage / cost          | ❌ No                    | ✅ Yes                 |
-| Reasoning/thinking steps    | ❌ No                    | ❌ No                  |
-| Error messages              | ✅ Yes (on failure)      | ✅ Yes                 |
-
-**Key point:** The main agent receives **only the final assistant text** from each subagent. Not the tool calls, not the reasoning, not the intermediate steps. This prevents context pollution while still giving you the results.
-
-### Parallel Mode Behavior
-
-When running multiple agents in parallel:
-
-- All subagents start simultaneously (up to 4 concurrent)
-- The top-level `mode` applies to all tasks in that call
-- Main agent receives a combined result after all finish:
-
-```
-Parallel: 3/3 succeeded
-
-[writer] completed: Full output text here...
-[tester] completed: Full output text here...
-[reviewer] completed: Full output text here...
-```
+The main agent receives a concise text summary for each subagent call. Tool calls, usage, generated session IDs, and creation metadata are available to the TUI and tool result details; the text summary includes only the logical `session` handle in the call header when one was provided.
 
 ## Features
 
-- **Auto-Discovery** — Agents are found at startup and their descriptions are injected into the main agent's system prompt.
-- **Context Mode Switch** — `spawn` (fresh context) and `fork` (session snapshot + task) per call.
-- **Depth + Cycle Guards** — Depth limiting and ancestry-cycle checks prevent runaway recursive delegation by default.
-- **Streaming Updates** — Watch subagent progress in real-time as tool calls and outputs stream in.
-- **Rich TUI Rendering** — Collapsed/expanded views with usage stats, tool call previews, and markdown output.
-- **Security Confirmation** — Project-local agents require explicit user approval before execution.
+- **Auto-Discovery** — Agents are found at startup and listed in the main agent's system prompt.
+- **Unified Calls API** — One schema for one or many subagent calls.
+- **Named Persistent Sessions** — Continue specialist subagents across multiple turns.
+- **Per-Call Initial Context** — Each call chooses empty or parent-seeded creation.
+- **Depth + Cycle Guards** — Prevent runaway recursive delegation.
+- **Streaming Updates** — Watch progress in real time.
+- **Rich TUI Rendering** — Collapsed/expanded views with usage stats, tool calls, markdown output, and session metadata.
+- **Security Confirmation** — Project-local agents require explicit user approval by default.
 
 ## Project Structure
 
-```
-index.ts       — Extension entry point: lifecycle hooks, tool registration, mode orchestration
-agents.ts      — Agent discovery: reads and parses .md files from the active Pi config dir and project directories
-runner-cli.js  — Parent CLI inheritance: parses and normalizes flags forwarded to child processes
-runner.ts      — Process runner: starts `pi` subprocesses in spawn/fork context modes and streams JSON events
-render.ts      — TUI rendering: renderCall and renderResult for the subagent tool
-types.ts       — Shared types and pure helper functions
+```text
+index.ts       — Extension entry point, tool registration, validation, session identity, orchestration
+agents.ts      — Agent discovery and Markdown parsing
+runner-cli.js  — Parent CLI inheritance for child processes
+runner.ts      — Process runner for child `pi` invocations
+render.ts      — TUI rendering for subagent calls/results
+types.ts       — Shared types and result helpers
 ```
 
 ## Attribution
