@@ -413,6 +413,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
 
       const maybeFinishFromAgentEnd = () => {
         if (!result.sawAgentEnd || didClose || settled) return;
+        if (session) {
+          // Named sessions persist child history. Let Pi exit naturally so its
+          // session file is fully flushed before the parent reports completion.
+          return;
+        }
         clearSemanticCompletionTimer();
         semanticCompletionTimer = setTimeout(() => {
           if (didClose || settled || !result.sawAgentEnd) return;
