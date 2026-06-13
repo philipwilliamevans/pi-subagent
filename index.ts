@@ -7,6 +7,7 @@
  */
 
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { type ExtensionAPI, getDefaultSessionDir, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -41,6 +42,7 @@ const SUBAGENT_PREVENT_CYCLES_ENV = "PI_SUBAGENT_PREVENT_CYCLES";
 const SESSION_ID_NAMESPACE = "pi-subagent/v1";
 const SESSION_ID_PREFIX = "subagent.";
 const SESSION_HANDLE_MAX_LENGTH = 120;
+const SESSION_LOCK_STALE_MS = 6 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Tool parameter schema
@@ -57,7 +59,7 @@ const CallItem = Type.Object({
     Type.String({ description: "Working directory for this subagent process" }),
   ),
   initialContext: Type.Optional(
-    Type.String({
+    Type.Union([Type.Literal("empty"), Type.Literal("parent")], {
       description:
         "Initial context for a newly-created child conversation: 'empty' (default) or 'parent'. Existing named sessions ignore this field.",
       default: DEFAULT_INITIAL_CONTEXT,
@@ -117,12 +119,18 @@ interface NormalizedCallsResult {
   error?: string;
 }
 
+interface SessionLock {
+  sessionId: string;
+  path: string;
+}
+
 interface ExtensionExecutionContext {
   cwd: string;
   hasUI: boolean;
   sessionManager: SessionSnapshotSource & {
     getSessionId: () => string;
     getSessionDir: () => string;
+    getSessionFile: () => string | undefined;
   };
   ui: { confirm: (title: string, body: string) => Promise<boolean> };
 }
@@ -130,7 +138,7 @@ interface ExtensionExecutionContext {
 function parseInitialContext(raw: unknown): InitialContext | null {
   if (raw === undefined) return DEFAULT_INITIAL_CONTEXT;
   if (typeof raw !== "string") return null;
-  const normalized = raw.trim().toLowerCase();
+  const normalized = raw.trim();
   if (normalized === "empty" || normalized === "parent") return normalized;
   return null;
 }
@@ -477,22 +485,23 @@ function getActiveSessionError(
   return null;
 }
 
-async function sessionExists(
-  sessionId: string,
-  cwd: string,
-  sessionDir: string | undefined,
-): Promise<boolean> {
-  const sessions = await SessionManager.list(cwd, sessionDir);
-  return sessions.some((session) => session.id === sessionId);
-}
-
 async function resolveSessionCreationState(
   calls: NormalizedCall[],
   sessionDir: string | undefined,
 ): Promise<void> {
+  const sessionIdsByListKey = new Map<string, Set<string>>();
+
   for (const call of calls) {
     if (!call.session) continue;
-    const exists = await sessionExists(call.session.id, call.effectiveCwd, sessionDir);
+    const key = `${sessionDir ?? ""}\0${call.effectiveCwd}`;
+    let ids = sessionIdsByListKey.get(key);
+    if (!ids) {
+      const sessions = await SessionManager.list(call.effectiveCwd, sessionDir);
+      ids = new Set(sessions.map((session) => session.id));
+      sessionIdsByListKey.set(key, ids);
+    }
+
+    const exists = ids.has(call.session.id);
     call.session.created = !exists;
     call.session.initialContextApplied = exists ? null : call.initialContext;
   }
@@ -520,6 +529,120 @@ function getPersistentSessionDir(ctx: ExtensionExecutionContext): string | undef
   } catch {
     return undefined;
   }
+}
+
+function getNamedSessionParentError(
+  calls: NormalizedCall[],
+  ctx: ExtensionExecutionContext,
+): string | null {
+  if (!calls.some((call) => call.session)) return null;
+  if (ctx.sessionManager.getSessionFile()) return null;
+  return "Named subagent sessions require a persisted parent Pi session. Omit `session` for ephemeral delegation, or run the parent without --no-session.";
+}
+
+function sessionBaseDir(call: NormalizedCall, sessionDir: string | undefined): string {
+  return sessionDir ?? getDefaultSessionDir(call.effectiveCwd);
+}
+
+function isLockStale(lockPath: string): boolean {
+  try {
+    const ownerPath = path.join(lockPath, "owner.json");
+    const owner = JSON.parse(fs.readFileSync(ownerPath, "utf-8")) as {
+      createdAt?: unknown;
+    };
+    const createdAt =
+      typeof owner.createdAt === "string" ? Date.parse(owner.createdAt) : NaN;
+    return Number.isFinite(createdAt) && Date.now() - createdAt > SESSION_LOCK_STALE_MS;
+  } catch {
+    try {
+      return Date.now() - fs.statSync(lockPath).mtimeMs > SESSION_LOCK_STALE_MS;
+    } catch {
+      return true;
+    }
+  }
+}
+
+function writeLockOwner(lockPath: string, call: NormalizedCall): void {
+  fs.writeFileSync(
+    path.join(lockPath, "owner.json"),
+    JSON.stringify(
+      {
+        pid: process.pid,
+        createdAt: new Date().toISOString(),
+        sessionId: call.session?.id,
+        agent: call.agent,
+        handle: call.session?.handle,
+        cwd: call.effectiveCwd,
+      },
+      null,
+      2,
+    ),
+    { encoding: "utf-8", mode: 0o600 },
+  );
+}
+
+function tryAcquireSessionLock(
+  call: NormalizedCall,
+  sessionDir: string | undefined,
+): { lock?: SessionLock; error?: string } {
+  if (!call.session) return {};
+
+  const lockRoot = path.join(sessionBaseDir(call, sessionDir), ".pi-subagent-locks");
+  const lockPath = path.join(lockRoot, `${call.session.id}.lock`);
+  fs.mkdirSync(lockRoot, { recursive: true });
+
+  const acquire = () => {
+    fs.mkdirSync(lockPath);
+    writeLockOwner(lockPath, call);
+    return { sessionId: call.session!.id, path: lockPath };
+  };
+
+  try {
+    return { lock: acquire() };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      return {
+        error: `Failed to lock persistent subagent session ${call.session.id}: ${String(error)}`,
+      };
+    }
+  }
+
+  if (isLockStale(lockPath)) {
+    fs.rmSync(lockPath, { recursive: true, force: true });
+    try {
+      return { lock: acquire() };
+    } catch (error) {
+      return {
+        error: `Persistent subagent session ${call.session.id} is already running. Retry after that call finishes.`,
+      };
+    }
+  }
+
+  return {
+    error: `Persistent subagent session ${call.session.id} is already running. Retry after that call finishes.`,
+  };
+}
+
+function releaseSessionLocks(locks: SessionLock[]): void {
+  for (const lock of locks) {
+    fs.rmSync(lock.path, { recursive: true, force: true });
+  }
+}
+
+function acquireSessionLocks(
+  calls: NormalizedCall[],
+  sessionDir: string | undefined,
+): { locks: SessionLock[]; error?: string } {
+  const locks: SessionLock[] = [];
+  for (const call of calls) {
+    const result = tryAcquireSessionLock(call, sessionDir);
+    if (result.error) {
+      releaseSessionLocks(locks);
+      return { locks: [], error: result.error };
+    }
+    if (result.lock) locks.push(result.lock);
+  }
+  return { locks };
 }
 
 function getCycleViolations(
@@ -683,12 +806,12 @@ Fields:
 - \`agent\` — required, exact available agent name.
 - \`prompt\` — required, non-empty, sent verbatim as the subagent user prompt.
 - \`initialContext\` — optional: \`"empty"\` (default) starts without parent history; \`"parent"\` seeds a newly-created child conversation from the current parent session snapshot. Existing named sessions ignore this field.
-- \`session\` — optional durable conversation handle. If present, the call continues or creates a persistent child Pi session. The handle is scoped by parent session, effective cwd, and agent name. The same handle used with different agents resolves to different sessions.
+- \`session\` — optional durable conversation handle. If present, the call continues or creates a persistent child Pi session. The handle is scoped by parent session, effective cwd, and agent name. The same handle used with different agents resolves to different sessions. Requires a persisted parent Pi session.
 - \`cwd\` — optional working directory for that subagent process.
 
 Rules:
 - Do not use the same resolved session in more than one concurrent call. Same handle + same agent + same cwd conflicts; same handle + different agent is allowed.
-- Use \`session\` for multi-turn specialist work; omit it for one-off delegation.
+- Use \`session\` for multi-turn specialist work; omit it for one-off delegation or when the parent is running with \`--no-session\`.
 
 ### Runtime delegation guards
 
@@ -718,6 +841,7 @@ Rules:
         "  session: optional durable logical handle for continuing/creating a persistent child Pi session.",
         "    Handles are scoped by parent session, effective cwd, and agent name.",
         "    The same handle with different agents resolves to different sessions.",
+        "    Requires a persisted parent Pi session; omit it when the parent uses --no-session.",
         "  cwd: optional working directory for that subagent process.",
         "",
         "Multiple calls may run concurrently. A persistent session may be used by only one running call at a time.",
@@ -753,6 +877,18 @@ Rules:
           };
         }
 
+        const parentSessionError = getNamedSessionParentError(
+          calls,
+          ctx as ExtensionExecutionContext,
+        );
+        if (parentSessionError) {
+          return {
+            content: [{ type: "text", text: parentSessionError }],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+
         const requested = new Set(calls.map((call) => call.agent));
 
         if (preventCycles) {
@@ -781,10 +917,60 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           }
         }
 
+        const requestedProjectAgents = getRequestedProjectAgents(
+          agents,
+          requested,
+        );
+        const shouldConfirmProjectAgents = params.confirmProjectAgents ?? true;
+        if (requestedProjectAgents.length > 0 && shouldConfirmProjectAgents) {
+          if (ctx.hasUI) {
+            const approved = await confirmProjectAgentsIfNeeded(
+              requestedProjectAgents,
+              discovery.projectAgentsDir,
+              ctx,
+            );
+            if (!approved) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: "Canceled: project-local agents not approved.",
+                  },
+                ],
+                details: makeDetails([]),
+              };
+            }
+          } else {
+            const names = requestedProjectAgents.map((a) => a.name).join(", ");
+            const dir = discovery.projectAgentsDir ?? "(unknown)";
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Blocked: project-local agent confirmation is required in non-UI mode.\nAgents: ${names}\nSource: ${dir}\n\nRe-run with confirmProjectAgents: false only if this repository is trusted.`,
+                },
+              ],
+              details: makeDetails([]),
+              isError: true,
+            };
+          }
+        }
+
+        const persistentSessionDir = getPersistentSessionDir(ctx as ExtensionExecutionContext);
+
         const activeSessionError = getActiveSessionError(calls, activeSessionIds);
         if (activeSessionError) {
           return {
             content: [{ type: "text", text: activeSessionError }],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+
+        const lockResult = acquireSessionLocks(calls, persistentSessionDir);
+        if (lockResult.error) {
+          return {
+            content: [{ type: "text", text: lockResult.error }],
             details: makeDetails([]),
             isError: true,
           };
@@ -796,46 +982,6 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         for (const id of reservedSessionIds) activeSessionIds.add(id);
 
         try {
-          const requestedProjectAgents = getRequestedProjectAgents(
-            agents,
-            requested,
-          );
-          const shouldConfirmProjectAgents = params.confirmProjectAgents ?? true;
-          if (requestedProjectAgents.length > 0 && shouldConfirmProjectAgents) {
-            if (ctx.hasUI) {
-              const approved = await confirmProjectAgentsIfNeeded(
-                requestedProjectAgents,
-                discovery.projectAgentsDir,
-                ctx,
-              );
-              if (!approved) {
-                return {
-                  content: [
-                    {
-                      type: "text",
-                      text: "Canceled: project-local agents not approved.",
-                    },
-                  ],
-                  details: makeDetails([]),
-                };
-              }
-            } else {
-              const names = requestedProjectAgents.map((a) => a.name).join(", ");
-              const dir = discovery.projectAgentsDir ?? "(unknown)";
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: `Blocked: project-local agent confirmation is required in non-UI mode.\nAgents: ${names}\nSource: ${dir}\n\nRe-run with confirmProjectAgents: false only if this repository is trusted.`,
-                  },
-                ],
-                details: makeDetails([]),
-                isError: true,
-              };
-            }
-          }
-
-          const persistentSessionDir = getPersistentSessionDir(ctx as ExtensionExecutionContext);
           await resolveSessionCreationState(calls, persistentSessionDir);
 
           let parentSessionSnapshotJsonl: string | undefined;
@@ -868,6 +1014,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           );
         } finally {
           for (const id of reservedSessionIds) activeSessionIds.delete(id);
+          releaseSessionLocks(lockResult.locks);
         }
       },
 

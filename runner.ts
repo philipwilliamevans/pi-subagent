@@ -84,13 +84,37 @@ function cleanupTempDir(dir: string | null): void {
   }
 }
 
+export function rewriteSessionHeaderCwd(
+  sessionJsonl: string,
+  cwd: string,
+): string | null {
+  const newlineIndex = sessionJsonl.indexOf("\n");
+  const firstLine = newlineIndex === -1 ? sessionJsonl : sessionJsonl.slice(0, newlineIndex);
+  if (!firstLine.trim()) return null;
+
+  let header: unknown;
+  try {
+    header = JSON.parse(firstLine);
+  } catch {
+    return null;
+  }
+
+  if (!header || typeof header !== "object" || (header as { type?: unknown }).type !== "session") {
+    return null;
+  }
+
+  const updatedHeader = { ...header, cwd };
+  const rest = newlineIndex === -1 ? "" : sessionJsonl.slice(newlineIndex + 1);
+  return `${JSON.stringify(updatedHeader)}\n${rest}`;
+}
+
 // ---------------------------------------------------------------------------
 // Build pi CLI arguments
 // ---------------------------------------------------------------------------
 
 const inheritedCliArgs = parseInheritedCliArgs(process.argv);
 
-function buildPiArgs(
+export function buildPiArgs(
   agent: AgentConfig,
   systemPromptPath: string | null,
   prompt: string,
@@ -290,7 +314,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
   let parentSessionTmpDir: string | null = null;
   let parentSessionTmpPath: string | null = null;
   if (needsParentSnapshot && parentSessionSnapshotJsonl) {
-    const tmp = writeSessionSnapshotToTempFile(agent.name, parentSessionSnapshotJsonl);
+    const snapshotCwd = path.resolve(callCwd ?? cwd);
+    const snapshotJsonl =
+      rewriteSessionHeaderCwd(parentSessionSnapshotJsonl, snapshotCwd) ??
+      parentSessionSnapshotJsonl;
+    const tmp = writeSessionSnapshotToTempFile(agent.name, snapshotJsonl);
     parentSessionTmpDir = tmp.dir;
     parentSessionTmpPath = tmp.filePath;
   }

@@ -1,6 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { isResultError, isResultSuccess, normalizeCompletedResult } from "../types.ts";
+
+function createTestableRunnerModule() {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-runner-"));
+  const modulePath = path.join(tmpDir, "runner.testable.ts");
+  const source = fs
+    .readFileSync(path.join(process.cwd(), "runner.ts"), "utf-8")
+    .replace('from "./runner-cli.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "runner-cli.js")).href)}`)
+    .replace('from "./runner-events.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "runner-events.js")).href)}`)
+    .replace('from "./types.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "types.ts")).href)}`);
+  fs.writeFileSync(modulePath, source);
+  return {
+    moduleUrl: pathToFileURL(modulePath).href,
+    cleanup: () => fs.rmSync(tmpDir, { recursive: true, force: true }),
+  };
+}
 
 function makeResult(overrides = {}) {
   return {
@@ -119,4 +138,91 @@ test("running results are neither success nor error", () => {
 
   assert.equal(isResultSuccess(result), false);
   assert.equal(isResultError(result), false);
+});
+
+test("rewriteSessionHeaderCwd updates only the session header cwd", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { rewriteSessionHeaderCwd } = await import(moduleUrl);
+    const input = [
+      JSON.stringify({ type: "session", id: "parent", cwd: "/old", version: 3 }),
+      JSON.stringify({ type: "message", id: "a", parentId: null, message: { role: "user", content: "hi" } }),
+      "",
+    ].join("\n");
+
+    const output = rewriteSessionHeaderCwd(input, "/new");
+    assert.ok(output);
+    const lines = output.trimEnd().split("\n");
+    assert.deepEqual(JSON.parse(lines[0]), {
+      type: "session",
+      id: "parent",
+      cwd: "/new",
+      version: 3,
+    });
+    assert.equal(JSON.parse(lines[1]).message.content, "hi");
+  } finally {
+    cleanup();
+  }
+});
+
+test("buildPiArgs plans ephemeral and persistent session flags", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { buildPiArgs } = await import(moduleUrl);
+    const agent = {
+      name: "review",
+      description: "reviewer",
+      source: "user",
+      systemPrompt: "",
+    };
+    const session = {
+      handle: "api-review",
+      id: "subagent.abc123",
+      name: "subagent: review · api-review",
+      cwd: "/repo",
+      created: true,
+      initialContextApplied: "parent",
+    };
+
+    assert.deepEqual(
+      buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined),
+      ["--mode", "json", "-p", "--no-session", "hello"],
+    );
+
+    assert.deepEqual(
+      buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", undefined, undefined),
+      ["--mode", "json", "-p", "--session", "/tmp/parent.jsonl", "hello"],
+    );
+
+    assert.deepEqual(
+      buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", session, undefined),
+      [
+        "--mode",
+        "json",
+        "-p",
+        "--fork",
+        "/tmp/parent.jsonl",
+        "--session-id",
+        "subagent.abc123",
+        "--name",
+        "subagent: review · api-review",
+        "hello",
+      ],
+    );
+
+    assert.deepEqual(
+      buildPiArgs(
+        agent,
+        null,
+        "hello",
+        "parent",
+        "/tmp/parent.jsonl",
+        { ...session, created: false, initialContextApplied: null },
+        undefined,
+      ),
+      ["--mode", "json", "-p", "--session-id", "subagent.abc123", "hello"],
+    );
+  } finally {
+    cleanup();
+  }
 });

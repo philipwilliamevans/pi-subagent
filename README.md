@@ -64,7 +64,7 @@ Each call supports:
 | `prompt` | Yes | — | Non-empty prompt sent verbatim to the subagent. |
 | `cwd` | No | Parent cwd | Working directory for this subagent process. |
 | `initialContext` | No | `"empty"` | `"empty"` starts a newly-created child conversation without parent history. `"parent"` seeds a newly-created child conversation from the current parent session snapshot. Existing named sessions ignore this field. |
-| `session` | No | — | Logical handle for a persistent child Pi session. Use this for multi-turn specialist work. |
+| `session` | No | — | Logical handle for a persistent child Pi session. Use this for multi-turn specialist work. Requires a persisted parent Pi session. |
 
 Top-level option:
 
@@ -179,8 +179,9 @@ Important rules:
 - A new top-level Pi parent session creates a new subagent session namespace, even in the same repository.
 - Same `session` handle with different agents resolves to different child sessions.
 - Same `session` handle with different effective cwd resolves to different child sessions.
-- A persistent child session can be used by only one running call at a time.
+- A persistent child session can be used by only one running call at a time. The extension uses a session lock in the Pi session directory to guard this across parent processes.
 - If two calls in the same tool invocation resolve to the same persistent session, the whole request is rejected before any child process starts.
+- Named child sessions require a persisted parent Pi session. If the parent is running with `--no-session`, omit `session` for ephemeral delegation.
 - To start a fresh durable conversation, choose a new `session` handle.
 
 ## Initial Context
