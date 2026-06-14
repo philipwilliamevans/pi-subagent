@@ -368,6 +368,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       let abortHandler: (() => void) | undefined;
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
       let persistentSessionExitTimer: NodeJS.Timeout | undefined;
+      let forcedExitCode: number | undefined;
 
       const clearSemanticCompletionTimer = () => {
         if (semanticCompletionTimer) {
@@ -409,7 +410,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         if (signal && abortHandler) {
           signal.removeEventListener("abort", abortHandler);
         }
-        resolve(code);
+        resolve(forcedExitCode ?? code);
       };
 
       const flushLine = (line: string) => {
@@ -437,7 +438,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
               if (!result.stderr.includes(result.errorMessage)) {
                 result.stderr += `${result.stderr ? "\n" : ""}${result.errorMessage}`;
               }
-              finish(1);
+              forcedExitCode = 1;
               terminateChild();
             }, PERSISTENT_SESSION_EXIT_TIMEOUT_MS);
             persistentSessionExitTimer.unref();

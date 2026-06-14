@@ -6,7 +6,7 @@
  * subagent invocations.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type ExtensionAPI, getDefaultSessionDir, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -15,6 +15,7 @@ import { type AgentConfig, discoverAgentsWithStarter } from "./agents.js";
 import { renderCall, renderResult } from "./render.js";
 import { getResultSummaryText } from "./runner-events.js";
 import { mapConcurrent, runAgent } from "./runner.js";
+import { acquireSessionLocks, releaseSessionLocks, type SessionLockTarget } from "./session-lock.js";
 import {
   type InitialContext,
   type SingleResult,
@@ -43,8 +44,6 @@ const SUBAGENT_TEMP_PARENT_SESSION_ENV = "PI_SUBAGENT_TEMP_PARENT_SESSION";
 const SESSION_ID_NAMESPACE = "pi-subagent/v1";
 const SESSION_ID_PREFIX = "subagent.";
 const SESSION_HANDLE_MAX_LENGTH = 120;
-const SESSION_LOCK_STALE_MS = 6 * 60 * 60 * 1000;
-const SESSION_LOCK_HEARTBEAT_MS = 30_000;
 
 // ---------------------------------------------------------------------------
 // Tool parameter schema
@@ -119,13 +118,6 @@ interface NormalizedCall {
 interface NormalizedCallsResult {
   calls?: NormalizedCall[];
   error?: string;
-}
-
-interface SessionLock {
-  sessionId: string;
-  path: string;
-  token: string;
-  heartbeat: NodeJS.Timeout;
 }
 
 interface ExtensionExecutionContext {
@@ -558,161 +550,19 @@ function sessionBaseDir(call: NormalizedCall, sessionDir: string | undefined): s
   return sessionDir ?? getDefaultSessionDir(call.effectiveCwd);
 }
 
-function getLockTimestamp(lockPath: string): number | null {
-  try {
-    const ownerPath = path.join(lockPath, "owner.json");
-    const owner = JSON.parse(fs.readFileSync(ownerPath, "utf-8")) as {
-      updatedAt?: unknown;
-      createdAt?: unknown;
-    };
-    const rawTimestamp =
-      typeof owner.updatedAt === "string" ? owner.updatedAt : owner.createdAt;
-    const timestamp = typeof rawTimestamp === "string" ? Date.parse(rawTimestamp) : NaN;
-    return Number.isFinite(timestamp) ? timestamp : null;
-  } catch {
-    try {
-      return fs.statSync(lockPath).mtimeMs;
-    } catch {
-      return null;
-    }
-  }
-}
-
-function isLockStale(lockPath: string): boolean {
-  const timestamp = getLockTimestamp(lockPath);
-  return timestamp === null || Date.now() - timestamp > SESSION_LOCK_STALE_MS;
-}
-
-function writeLockOwner(
-  lockPath: string,
-  call: NormalizedCall,
-  token: string,
-  createdAt: string,
-): void {
-  fs.writeFileSync(
-    path.join(lockPath, "owner.json"),
-    JSON.stringify(
-      {
-        token,
-        pid: process.pid,
-        createdAt,
-        updatedAt: new Date().toISOString(),
-        sessionId: call.session?.id,
-        agent: call.agent,
-        handle: call.session?.handle,
-        cwd: call.effectiveCwd,
-      },
-      null,
-      2,
-    ),
-    { encoding: "utf-8", mode: 0o600 },
-  );
-}
-
-function lockTokenMatches(lock: SessionLock): boolean {
-  try {
-    const owner = JSON.parse(
-      fs.readFileSync(path.join(lock.path, "owner.json"), "utf-8"),
-    ) as { token?: unknown };
-    return owner.token === lock.token;
-  } catch {
-    return false;
-  }
-}
-
-function startLockHeartbeat(
-  lockPath: string,
-  call: NormalizedCall,
-  token: string,
-  createdAt: string,
-): NodeJS.Timeout {
-  let heartbeat: NodeJS.Timeout;
-  heartbeat = setInterval(() => {
-    const lock = { sessionId: call.session!.id, path: lockPath, token, heartbeat };
-    if (!lockTokenMatches(lock)) return;
-    try {
-      writeLockOwner(lockPath, call, token, createdAt);
-    } catch {
-      /* best effort: stale-lock timeout remains as a backstop */
-    }
-  }, SESSION_LOCK_HEARTBEAT_MS);
-  heartbeat.unref();
-  return heartbeat;
-}
-
-function tryAcquireSessionLock(
-  call: NormalizedCall,
-  sessionDir: string | undefined,
-): { lock?: SessionLock; error?: string } {
-  if (!call.session) return {};
-
-  const lockRoot = path.join(sessionBaseDir(call, sessionDir), ".pi-subagent-locks");
-  const lockPath = path.join(lockRoot, `${call.session.id}.lock`);
-  fs.mkdirSync(lockRoot, { recursive: true });
-
-  const acquire = () => {
-    const token = randomUUID();
-    const createdAt = new Date().toISOString();
-    fs.mkdirSync(lockPath);
-    try {
-      writeLockOwner(lockPath, call, token, createdAt);
-    } catch (error) {
-      fs.rmSync(lockPath, { recursive: true, force: true });
-      throw error;
-    }
-    const heartbeat = startLockHeartbeat(lockPath, call, token, createdAt);
-    return { sessionId: call.session!.id, path: lockPath, token, heartbeat };
-  };
-
-  try {
-    return { lock: acquire() };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      return {
-        error: `Failed to lock persistent subagent session ${call.session.id}: ${String(error)}`,
-      };
-    }
-  }
-
-  if (isLockStale(lockPath)) {
-    fs.rmSync(lockPath, { recursive: true, force: true });
-    try {
-      return { lock: acquire() };
-    } catch {
-      return {
-        error: `Persistent subagent session ${call.session.id} is already running. Retry after that call finishes.`,
-      };
-    }
-  }
-
-  return {
-    error: `Persistent subagent session ${call.session.id} is already running. Retry after that call finishes.`,
-  };
-}
-
-function releaseSessionLocks(locks: SessionLock[]): void {
-  for (const lock of locks) {
-    clearInterval(lock.heartbeat);
-    if (lockTokenMatches(lock)) {
-      fs.rmSync(lock.path, { recursive: true, force: true });
-    }
-  }
-}
-
-function acquireSessionLocks(
+function getSessionLockTargets(
   calls: NormalizedCall[],
   sessionDir: string | undefined,
-): { locks: SessionLock[]; error?: string } {
-  const locks: SessionLock[] = [];
-  for (const call of calls) {
-    const result = tryAcquireSessionLock(call, sessionDir);
-    if (result.error) {
-      releaseSessionLocks(locks);
-      return { locks: [], error: result.error };
-    }
-    if (result.lock) locks.push(result.lock);
-  }
-  return { locks };
+): SessionLockTarget[] {
+  return calls
+    .filter((call) => call.session)
+    .map((call) => ({
+      sessionId: call.session!.id,
+      lockRoot: path.join(sessionBaseDir(call, sessionDir), ".pi-subagent-locks"),
+      agent: call.agent,
+      handle: call.session!.handle,
+      cwd: call.effectiveCwd,
+    }));
 }
 
 function getCycleViolations(
@@ -880,7 +730,7 @@ Fields:
 - \`cwd\` — optional working directory for that subagent process.
 
 Rules:
-- Do not use the same resolved session in more than one concurrent call. Same handle + same agent + same cwd conflicts; same handle + different agent is allowed.
+- Do not use the same resolved session in more than one concurrent call. Same handle + same agent + same cwd conflicts; same handle + different agent is allowed. If a stale session lock is reported, remove the lock directory only after confirming no subagent is still running.
 - Use \`session\` for multi-turn specialist work; omit it for one-off delegation, when the parent is running with \`--no-session\`, or from temporary parent-seeded subagent sessions.
 
 ### Runtime delegation guards
@@ -914,7 +764,7 @@ Rules:
         "    Requires a persisted parent Pi session; omit it when the parent uses --no-session or this process is a temporary parent-seeded subagent session.",
         "  cwd: optional working directory for that subagent process.",
         "",
-        "Multiple calls may run concurrently. A persistent session may be used by only one running call at a time.",
+        "Multiple calls may run concurrently. A persistent session may be used by only one running call at a time; stale lock errors require manual cleanup after confirming no subagent is still running.",
         "",
         'Example: { calls: [{ agent: "review", prompt: "Review this diff", session: "api-review", initialContext: "parent" }] }',
       ].join("\n"),
@@ -1037,7 +887,9 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           };
         }
 
-        const lockResult = acquireSessionLocks(calls, persistentSessionDir);
+        const lockResult = acquireSessionLocks(
+          getSessionLockTargets(calls, persistentSessionDir),
+        );
         if (lockResult.error) {
           return {
             content: [{ type: "text", text: lockResult.error }],

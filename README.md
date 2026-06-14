@@ -179,7 +179,7 @@ Important rules:
 - A new top-level Pi parent session creates a new subagent session namespace, even in the same repository.
 - Same `session` handle with different agents resolves to different child sessions.
 - Same `session` handle with different effective cwd resolves to different child sessions.
-- A persistent child session can be used by only one running call at a time. The extension uses a session lock in the Pi session directory to guard this across parent processes.
+- A persistent child session can be used by only one running call at a time. The extension uses a session lock in the Pi session directory to guard this across parent processes. If a process is killed, a later call may report a stale lock and ask you to remove the lock directory manually after confirming no subagent is still running.
 - If two calls in the same tool invocation resolve to the same persistent session, the whole request is rejected before any child process starts.
 - Named child sessions require a persisted parent Pi session. If the parent is running with `--no-session`, omit `session` for ephemeral delegation.
 - Named child sessions are also unavailable from temporary parent-seeded subagent sessions. Use a named parent subagent session first if nested durable delegation is needed.

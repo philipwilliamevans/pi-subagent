@@ -10,6 +10,7 @@
     "runner.ts",
     "runner-cli.js",
     "runner-events.js",
+    "session-lock.ts",
     "render.ts",
     "types.ts",
     "agents/*.md",
