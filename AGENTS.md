@@ -31,6 +31,7 @@ pi -e .
 
 - `index.ts` — extension entry point and tool registration
 - `agents.ts` — agent discovery/parsing
+- `contract.ts` — parent-facing tool contract text and prompt rendering
 - `runner.ts` — subagent process execution
 - `render.ts` — TUI rendering for tool calls/results
 - `types.ts` — shared types/helpers

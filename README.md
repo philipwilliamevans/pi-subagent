@@ -66,12 +66,6 @@ Each call supports:
 | `initialContext` | No | `"empty"` | `"empty"` starts a newly-created child conversation without parent history. `"parent"` seeds a newly-created child conversation from the current parent session snapshot. Existing named sessions ignore this field. |
 | `session` | No | — | Logical handle for a persistent child Pi session. Use this for multi-turn specialist work. Requires a persisted parent Pi session. |
 
-Top-level option:
-
-| Field | Default | Description |
-| --- | --- | --- |
-| `confirmProjectAgents` | `true` | Prompt before running repo-controlled project agents from `.pi/agents/`. In non-UI mode, project agents are blocked unless this is set to `false`. |
-
 ### Examples
 
 #### One ephemeral call
@@ -269,7 +263,7 @@ Subagents are defined as Markdown files with YAML frontmatter.
 
 **Project agents:** `.pi/agents/*.md`.
 
-Project agents win on name conflicts. When project agents are requested, Pi will prompt for confirmation before running them unless `confirmProjectAgents` is set to `false`.
+Project agents win on name conflicts. They are repo-controlled configuration and are discovered, advertised to the main agent, and executed like user agents. Use project agents only in repositories you trust.
 
 ### Starter Agent
 
@@ -350,13 +344,13 @@ The main agent receives a concise text summary for each subagent call. Tool call
 - **Depth + Cycle Guards** — Prevent runaway recursive delegation.
 - **Streaming Updates** — Watch progress in real time.
 - **Rich TUI Rendering** — Collapsed/expanded views with usage stats, tool calls, markdown output, and session metadata.
-- **Security Confirmation** — Project-local agents require explicit user approval by default.
 
 ## Project Structure
 
 ```text
 index.ts       — Extension entry point, tool registration, validation, session identity, orchestration
 agents.ts      — Agent discovery and Markdown parsing
+contract.ts    — Shared parent-facing tool contract text and prompt rendering
 runner-cli.js  — Parent CLI inheritance for child processes
 runner-events.js — Pi JSON event parsing and result summaries
 runner.ts      — Process runner for child `pi` invocations

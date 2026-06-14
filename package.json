@@ -7,6 +7,7 @@
   "files": [
     "index.ts",
     "agents.ts",
+    "contract.ts",
     "runner.ts",
     "runner-cli.js",
     "runner-events.js",

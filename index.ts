@@ -12,6 +12,13 @@ import * as path from "node:path";
 import { type ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, discoverAgentsWithStarter } from "./agents.js";
+import {
+  CALLS_SCHEMA_DESCRIPTION,
+  formatAvailableSubagentsPrompt,
+  formatSubagentToolDescription,
+  formatSubagentUsageErrorExample,
+  getCallFieldSchemaDescription,
+} from "./contract.js";
 import { renderCall, renderResult } from "./render.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
 import { getResultSummaryText } from "./runner-events.js";
@@ -52,41 +59,31 @@ const SESSION_HANDLE_MAX_LENGTH = 120;
 
 const CallItem = Type.Object({
   agent: Type.String({
-    description: "Name of an available agent (must match exactly)",
+    description: getCallFieldSchemaDescription("agent"),
   }),
   prompt: Type.String({
-    description: "Prompt sent verbatim to the subagent for this call",
+    description: getCallFieldSchemaDescription("prompt"),
   }),
   cwd: Type.Optional(
-    Type.String({ description: "Working directory for this subagent process" }),
+    Type.String({ description: getCallFieldSchemaDescription("cwd") }),
   ),
   initialContext: Type.Optional(
     Type.Union([Type.Literal("empty"), Type.Literal("parent")], {
-      description:
-        "Initial context for a newly-created child conversation: 'empty' (default) or 'parent'. Existing named sessions ignore this field.",
+      description: getCallFieldSchemaDescription("initialContext"),
       default: DEFAULT_INITIAL_CONTEXT,
     }),
   ),
   session: Type.Optional(
     Type.String({
-      description:
-        "Optional logical handle for a persistent subagent session. Scoped by parent session, effective cwd, and agent name.",
+      description: getCallFieldSchemaDescription("session"),
     }),
   ),
 });
 
 const SubagentParams = Type.Object({
   calls: Type.Array(CallItem, {
-    description:
-      "One or more subagent calls. A single call and multiple parallel calls use the same shape.",
+    description: CALLS_SCHEMA_DESCRIPTION,
   }),
-  confirmProjectAgents: Type.Optional(
-    Type.Boolean({
-      description:
-        "Whether to prompt the user before running project-local agents. Default: true.",
-      default: true,
-    }),
-  ),
 });
 
 // ---------------------------------------------------------------------------
@@ -123,13 +120,11 @@ interface NormalizedCallsResult {
 
 interface ExtensionExecutionContext {
   cwd: string;
-  hasUI: boolean;
   sessionManager: SessionSnapshotSource & {
     getSessionId: () => string;
     getSessionDir: () => string;
     getSessionFile: () => string | undefined;
   };
-  ui: { confirm: (title: string, body: string) => Promise<boolean> };
 }
 
 function parseInitialContext(raw: unknown): InitialContext | null {
@@ -329,16 +324,12 @@ function makeDetailsFactory(projectAgentsDir: string | null) {
   });
 }
 
-function formatUsageExample(): string {
-  return `Use the current API shape:\n{\n  "calls": [\n    { "agent": "agent-name", "prompt": "Prompt sent verbatim to the subagent" }\n  ]\n}`;
-}
-
 function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsResult {
   if (!Array.isArray(rawCalls)) {
-    return { error: `Invalid subagent parameters: missing calls array.\n${formatUsageExample()}` };
+    return { error: `Invalid subagent parameters: missing calls array.\n${formatSubagentUsageErrorExample()}` };
   }
   if (rawCalls.length === 0) {
-    return { error: `Invalid subagent parameters: calls must contain at least one call.\n${formatUsageExample()}` };
+    return { error: `Invalid subagent parameters: calls must contain at least one call.\n${formatSubagentUsageErrorExample()}` };
   }
   if (rawCalls.length > MAX_CALLS) {
     return { error: `Too many subagent calls (${rawCalls.length}). Max is ${MAX_CALLS}.` };
@@ -442,32 +433,6 @@ function oneLine(text: string): string {
 
 function formatSessionDisplayName(agentName: string, sessionHandle: string): string {
   return `subagent: ${agentName} · ${oneLine(sessionHandle)}`;
-}
-
-function formatSessionPreference(preference: AgentConfig["sessionPreference"]): string {
-  switch (preference) {
-    case "persistent":
-      return "Prefer topic-specific named persistent sessions when context should carry across related calls.";
-    case "ephemeral":
-      return "Prefer ephemeral calls unless the caller explicitly needs continuation.";
-    case "either":
-      return "Choose ephemeral or persistent sessions based on the task.";
-    default:
-      return "";
-  }
-}
-
-function formatAgentForPrompt(agent: AgentConfig): string {
-  const lines = [`- **${agent.name}**: ${agent.description}`];
-  if (agent.sessionPreference) {
-    lines.push(
-      `  Session preference: ${agent.sessionPreference} — ${formatSessionPreference(agent.sessionPreference)}`,
-    );
-  }
-  if (agent.sessionHint) {
-    lines.push(`  Session hint: ${oneLine(agent.sessionHint)}`);
-  }
-  return lines.join("\n");
 }
 
 function attachSessionIdentities(calls: NormalizedCall[], parentSessionId: string): void {
@@ -601,35 +566,6 @@ function getCycleViolations(
   return Array.from(requestedNames).filter((name) => stackSet.has(name));
 }
 
-/** Get project-local agents referenced by the current request. */
-function getRequestedProjectAgents(
-  agents: AgentConfig[],
-  requestedNames: Set<string>,
-): AgentConfig[] {
-  return Array.from(requestedNames)
-    .map((name) => agents.find((a) => a.name === name))
-    .filter((a): a is AgentConfig => a?.source === "project");
-}
-
-/**
- * Prompt the user to confirm project-local agents if needed.
- * Returns false if the user declines.
- */
-async function confirmProjectAgentsIfNeeded(
-  projectAgents: AgentConfig[],
-  projectAgentsDir: string | null,
-  ctx: { ui: { confirm: (title: string, body: string) => Promise<boolean> } },
-): Promise<boolean> {
-  if (projectAgents.length === 0) return true;
-
-  const names = projectAgents.map((a) => a.name).join(", ");
-  const dir = projectAgentsDir ?? "(unknown)";
-  return ctx.ui.confirm(
-    "Run project-local agents?",
-    `Agents: ${names}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
-  );
-}
-
 function makePlaceholderResult(call: NormalizedCall): SingleResult {
   return {
     callIndex: call.index,
@@ -718,55 +654,15 @@ export default function (pi: ExtensionAPI) {
     if (!canDelegate) return;
     if (discoveredAgents.length === 0) return;
 
-    const agentList = discoveredAgents
-      .map((a) => formatAgentForPrompt(a))
-      .join("\n");
     return {
       systemPrompt:
         event.systemPrompt +
-        `\n\n## Available Subagents
-
-The following subagents are available via the \`subagent\` tool:
-
-${agentList}
-
-### How to call the subagent tool
-
-Use \`calls\` for both one and many subagent invocations:
-
-\`\`\`json
-{
-  "calls": [
-    {
-      "agent": "agent-name",
-      "prompt": "Prompt sent verbatim to the subagent",
-      "initialContext": "empty",
-      "session": "optional-logical-handle"
-    }
-  ]
-}
-\`\`\`
-
-Each call runs in an isolated \`pi\` process. Multiple calls may run concurrently.
-
-Fields:
-- \`agent\` — required, exact available agent name.
-- \`prompt\` — required, non-empty, sent verbatim as the subagent user prompt.
-- \`initialContext\` — optional: \`"empty"\` (default) starts without parent history; \`"parent"\` seeds a newly-created child conversation from the current parent session snapshot. Existing named sessions ignore this field.
-- \`session\` — optional durable conversation handle. If present, the call continues or creates a persistent child Pi session. The handle is scoped by parent session, effective cwd, and agent name. The same handle used with different agents resolves to different sessions. Requires a persisted parent Pi session.
-- \`cwd\` — optional working directory for that subagent process.
-
-Rules:
-- Do not use the same resolved session in more than one concurrent call. Same handle + same agent + same cwd conflicts; same handle + different agent is allowed. If a stale session lock is reported, remove the lock directory only after confirming no subagent is still running.
-- Use \`session\` for multi-turn specialist work; omit it for one-off delegation, when the parent is running with \`--no-session\`, or from temporary parent-seeded subagent sessions.
-- Agent-specific session preference and hint lines are advisory only. The tool creates or continues a persistent session only when you include \`session\` in the call.
-
-### Runtime delegation guards
-
-- Max depth: current depth ${currentDepth}, max depth ${maxDepth}
-- Cycle prevention: ${preventCycles ? "enabled" : "disabled"}
-- Current delegation stack: ${ancestorAgentStack.length > 0 ? ancestorAgentStack.join(" -> ") : "(root)"}
-`,
+        formatAvailableSubagentsPrompt(discoveredAgents, {
+          currentDepth,
+          maxDepth,
+          preventCycles,
+          ancestorAgentStack,
+        }),
     };
   });
 
@@ -775,29 +671,7 @@ Rules:
     pi.registerTool({
       name: "subagent",
       label: "Subagent",
-      description: [
-        "Delegate work to specialized subagents running in isolated pi processes.",
-        "",
-        "Use exactly one top-level `calls` array for both one and many invocations.",
-        "Each call requires `agent` and `prompt`; `prompt` is sent verbatim.",
-        "",
-        "Per-call options:",
-        "  initialContext: \"empty\" (default) or \"parent\".",
-        "    - \"empty\": start a newly-created child conversation without parent history.",
-        "    - \"parent\": seed a newly-created child conversation from the current parent session snapshot.",
-        "    - Existing named sessions ignore initialContext.",
-        "  session: optional durable logical handle for continuing/creating a persistent child Pi session.",
-        "    Handles are scoped by parent session, effective cwd, and agent name.",
-        "    The same handle with different agents resolves to different sessions.",
-        "    Requires a persisted parent Pi session; omit it when the parent uses --no-session or this process is a temporary parent-seeded subagent session.",
-        "  cwd: optional working directory for that subagent process.",
-        "",
-        "Agent definitions may include advisory session preference/hint text. The tool creates or continues a persistent session only when a call includes `session`.",
-        "",
-        "Multiple calls may run concurrently. A persistent session may be used by only one running call at a time; stale lock errors require manual cleanup after confirming no subagent is still running.",
-        "",
-        'Example: { calls: [{ agent: "review", prompt: "Review this diff", session: "api-review", initialContext: "parent" }] }',
-      ].join("\n"),
+      description: formatSubagentToolDescription(),
       parameters: SubagentParams,
 
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -859,45 +733,6 @@ Rules:
 Current stack: ${stackText}
 
 This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A).`,
-                },
-              ],
-              details: makeDetails([]),
-              isError: true,
-            };
-          }
-        }
-
-        const requestedProjectAgents = getRequestedProjectAgents(
-          agents,
-          requested,
-        );
-        const shouldConfirmProjectAgents = params.confirmProjectAgents ?? true;
-        if (requestedProjectAgents.length > 0 && shouldConfirmProjectAgents) {
-          if (ctx.hasUI) {
-            const approved = await confirmProjectAgentsIfNeeded(
-              requestedProjectAgents,
-              discovery.projectAgentsDir,
-              ctx,
-            );
-            if (!approved) {
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: "Canceled: project-local agents not approved.",
-                  },
-                ],
-                details: makeDetails([]),
-              };
-            }
-          } else {
-            const names = requestedProjectAgents.map((a) => a.name).join(", ");
-            const dir = discovery.projectAgentsDir ?? "(unknown)";
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Blocked: project-local agent confirmation is required in non-UI mode.\nAgents: ${names}\nSource: ${dir}\n\nRe-run with confirmProjectAgents: false only if this repository is trusted.`,
                 },
               ],
               details: makeDetails([]),
