@@ -333,10 +333,10 @@ The main agent receives a uniform wrapper for one or many calls:
 ```text
 2/2 succeeded
 
-[0: review session=api-review] completed:
+[1: review session=api-review] completed:
 ...
 
-[1: testing-audit] completed:
+[2: testing-audit] completed:
 ...
 ```
 
@@ -345,10 +345,10 @@ If any call fails, the tool result is marked as an error while still returning e
 ```text
 1/2 succeeded
 
-[0: review session=api-review] completed:
+[1: review session=api-review] completed:
 ...
 
-[1: testing-audit] failed:
+[2: testing-audit] failed:
 Unknown agent: "testing-audit".
 ```
 

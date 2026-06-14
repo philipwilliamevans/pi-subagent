@@ -97,7 +97,9 @@ test("expanded renderer tolerates legacy pre-prompt results with task", async ()
       theme,
     );
 
-    assert.ok(collectText(component).some((text) => text.includes("Prompt: old task field")));
+    const renderedText = collectText(component);
+    assert.ok(renderedText.some((text) => text.includes("1: review")));
+    assert.ok(renderedText.some((text) => text.includes("Prompt: old task field")));
   } finally {
     cleanup();
   }

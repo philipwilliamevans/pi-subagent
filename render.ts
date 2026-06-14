@@ -109,9 +109,9 @@ function formatInitialContext(context?: InitialContext): string {
 }
 
 function formatResultLabel(r: SingleResult, fallbackIndex: number): string {
-	const index = r.callIndex ?? fallbackIndex;
+	const displayIndex = (r.callIndex ?? fallbackIndex) + 1;
 	const sessionText = r.session ? ` session=${oneLine(r.session.handle)}` : "";
-	return `${index}: ${r.agent}${sessionText}`;
+	return `${displayIndex}: ${r.agent}${sessionText}`;
 }
 
 function formatInitialContextStatus(r: SingleResult): string {

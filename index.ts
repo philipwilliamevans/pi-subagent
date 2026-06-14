@@ -582,9 +582,9 @@ function makePlaceholderResult(call: NormalizedCall): SingleResult {
 }
 
 function formatResultLabel(result: SingleResult, fallbackIndex: number): string {
-  const index = result.callIndex ?? fallbackIndex;
+  const displayIndex = (result.callIndex ?? fallbackIndex) + 1;
   const sessionText = result.session ? ` session=${oneLine(result.session.handle)}` : "";
-  return `${index}: ${result.agent}${sessionText}`;
+  return `${displayIndex}: ${result.agent}${sessionText}`;
 }
 
 function formatCallsSummary(results: SingleResult[]): string {
