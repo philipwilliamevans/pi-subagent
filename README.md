@@ -274,20 +274,39 @@ If no user or project subagents can be found, `pi-subagent` creates a starter us
 
 The starter is read-only (`read`, `grep`, `find`, `ls`) and is meant for focused codebase exploration. It includes an advisory preference for topic-specific persistent sessions so follow-up exploration can reuse context. Existing files are never overwritten.
 
-### Example Agent
+### Small Example Agents
+
+Small, focused definitions work best. The `description` helps the main agent choose a subagent; the Markdown body is the subagent's extra system prompt.
+
+#### explore
+
+A good default for fast codebase reconnaissance. It prefers named sessions because exploration often has follow-up questions.
 
 ```markdown
 ---
-name: writer
-description: Expert technical writer and editor
-model: anthropic/claude-3-5-sonnet
-thinking: medium
-tools: read, write
-sessionPreference: either
-sessionHint: Use a named session for multi-turn editing plans; use ephemeral calls for one-off copy edits.
+name: explore
+description: Codebase exploration specialist for focused searches and evidence-backed summaries.
+sessionPreference: persistent
+sessionHint: Prefer a topic-specific named session for iterative exploration; use ephemeral calls for one-off searches.
 ---
 
-You are an expert technical writer. Improve clarity and concision while preserving technical accuracy.
+You are a codebase exploration specialist. Find the relevant files, symbols, and tests for the request. Return concise findings with file paths and line references.
+```
+
+#### review
+
+A useful complement to `explore`: stateless by default, judgment-oriented, and configured for deeper reasoning.
+
+```markdown
+---
+name: review
+description: Pragmatic code reviewer for correctness, regression risk, test coverage, and maintainability.
+thinking: high
+sessionPreference: ephemeral
+sessionHint: Use ephemeral calls for independent reviews; use a named session only when continuing the same review thread.
+---
+
+You review code changes. Focus on substantive issues, cite files and lines, and distinguish confirmed problems from suggestions. Keep the report concise.
 ```
 
 ### Frontmatter Fields
