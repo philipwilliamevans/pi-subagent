@@ -92,6 +92,32 @@ test("normalizeCompletedResult treats agent_end with final assistant output as s
   assert.equal(isResultError(result), false);
 });
 
+test("normalizeCompletedResult preserves process-level errors despite semantic completion", () => {
+  const result = makeResult({
+    exitCode: 1,
+    processError: true,
+    stopReason: "error",
+    errorMessage: "Named subagent session did not exit.",
+    stderr: "Named subagent session did not exit.",
+    sawAgentEnd: true,
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Done." }],
+        timestamp: 1,
+      },
+    ],
+  });
+
+  normalizeCompletedResult(result, false);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stopReason, "error");
+  assert.equal(result.errorMessage, "Named subagent session did not exit.");
+  assert.equal(isResultSuccess(result), false);
+  assert.equal(isResultError(result), true);
+});
+
 test("normalizeCompletedResult preserves semantic completion when the process is aborted after agent_end", () => {
   const result = makeResult({
     exitCode: 130,

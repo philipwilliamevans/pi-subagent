@@ -29,7 +29,9 @@ const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
 const SUBAGENT_MAX_DEPTH_ENV = "PI_SUBAGENT_MAX_DEPTH";
 const SUBAGENT_STACK_ENV = "PI_SUBAGENT_STACK";
 const SUBAGENT_PREVENT_CYCLES_ENV = "PI_SUBAGENT_PREVENT_CYCLES";
+const SUBAGENT_TEMP_PARENT_SESSION_ENV = "PI_SUBAGENT_TEMP_PARENT_SESSION";
 const PI_OFFLINE_ENV = "PI_OFFLINE";
+const PERSISTENT_SESSION_EXIT_TIMEOUT_MS = 30_000;
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
@@ -350,6 +352,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
           [SUBAGENT_MAX_DEPTH_ENV]: String(propagatedMaxDepth),
           [SUBAGENT_STACK_ENV]: JSON.stringify(propagatedStack),
           [SUBAGENT_PREVENT_CYCLES_ENV]: preventCycles ? "1" : "0",
+          [SUBAGENT_TEMP_PARENT_SESSION_ENV]: !session && initialContext === "parent" ? "1" : "0",
           [PI_OFFLINE_ENV]: "1",
         },
       });
@@ -364,11 +367,19 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       let settled = false;
       let abortHandler: (() => void) | undefined;
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
+      let persistentSessionExitTimer: NodeJS.Timeout | undefined;
 
       const clearSemanticCompletionTimer = () => {
         if (semanticCompletionTimer) {
           clearTimeout(semanticCompletionTimer);
           semanticCompletionTimer = undefined;
+        }
+      };
+
+      const clearPersistentSessionExitTimer = () => {
+        if (persistentSessionExitTimer) {
+          clearTimeout(persistentSessionExitTimer);
+          persistentSessionExitTimer = undefined;
         }
       };
 
@@ -394,6 +405,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         if (settled) return;
         settled = true;
         clearSemanticCompletionTimer();
+        clearPersistentSessionExitTimer();
         if (signal && abortHandler) {
           signal.removeEventListener("abort", abortHandler);
         }
@@ -416,6 +428,20 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         if (session) {
           // Named sessions persist child history. Let Pi exit naturally so its
           // session file is fully flushed before the parent reports completion.
+          if (!persistentSessionExitTimer) {
+            persistentSessionExitTimer = setTimeout(() => {
+              if (didClose || settled || !result.sawAgentEnd) return;
+              result.processError = true;
+              result.stopReason = "error";
+              result.errorMessage = `Named subagent session did not exit within ${PERSISTENT_SESSION_EXIT_TIMEOUT_MS}ms after completing; terminated to avoid hanging.`;
+              if (!result.stderr.includes(result.errorMessage)) {
+                result.stderr += `${result.stderr ? "\n" : ""}${result.errorMessage}`;
+              }
+              finish(1);
+              terminateChild();
+            }, PERSISTENT_SESSION_EXIT_TIMEOUT_MS);
+            persistentSessionExitTimer.unref();
+          }
           return;
         }
         clearSemanticCompletionTimer();

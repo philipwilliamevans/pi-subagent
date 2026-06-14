@@ -182,6 +182,7 @@ Important rules:
 - A persistent child session can be used by only one running call at a time. The extension uses a session lock in the Pi session directory to guard this across parent processes.
 - If two calls in the same tool invocation resolve to the same persistent session, the whole request is rejected before any child process starts.
 - Named child sessions require a persisted parent Pi session. If the parent is running with `--no-session`, omit `session` for ephemeral delegation.
+- Named child sessions are also unavailable from temporary parent-seeded subagent sessions. Use a named parent subagent session first if nested durable delegation is needed.
 - To start a fresh durable conversation, choose a new `session` handle.
 
 ## Initial Context
@@ -350,6 +351,7 @@ The main agent receives a concise text summary for each subagent call. Tool call
 index.ts       — Extension entry point, tool registration, validation, session identity, orchestration
 agents.ts      — Agent discovery and Markdown parsing
 runner-cli.js  — Parent CLI inheritance for child processes
+runner-events.js — Pi JSON event parsing and result summaries
 runner.ts      — Process runner for child `pi` invocations
 render.ts      — TUI rendering for subagent calls/results
 types.ts       — Shared types and result helpers

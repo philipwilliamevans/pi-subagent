@@ -48,6 +48,8 @@ export interface SingleResult {
 	stopReason?: string;
 	errorMessage?: string;
 	sawAgentEnd?: boolean;
+	/** Process-level failures that should not be normalized away by semantic assistant completion. */
+	processError?: boolean;
 }
 
 /** Metadata attached to every tool result for rendering. */
@@ -93,6 +95,7 @@ export function hasSemanticCompletion(r: Pick<SingleResult, "messages" | "sawAge
 /** Whether a result should be treated as successful by the wrapper/UI. */
 export function isResultSuccess(r: SingleResult): boolean {
 	if (r.exitCode === -1) return false;
+	if (r.processError) return false;
 	if (hasSemanticCompletion(r)) return true;
 	return r.exitCode === 0 && r.stopReason !== "error" && r.stopReason !== "aborted";
 }
@@ -124,7 +127,7 @@ export function normalizeCompletedResult(result: SingleResult, wasAborted: boole
 	}
 
 	if (result.exitCode > 0) {
-		if (hasSemanticSuccess) {
+		if (hasSemanticSuccess && !result.processError) {
 			result.exitCode = 0;
 			if (result.stopReason === "error") result.stopReason = undefined;
 			if (result.errorMessage === result.stderr.trim()) {
