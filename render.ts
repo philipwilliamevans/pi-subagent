@@ -187,11 +187,14 @@ export function renderCall(args: Record<string, any>, theme: { fg: ThemeFg; bold
 		const session = typeof call.session === "string" && call.session.trim()
 			? theme.fg("muted", ` session=${oneLine(call.session)}`)
 			: "";
+		const model = typeof call.model === "string" && call.model.trim()
+			? theme.fg("muted", ` model=${oneLine(call.model)}`)
+			: "";
 		const context = call.initialContext === "parent"
 			? theme.fg("warning", " parent")
 			: "";
 		const preview = typeof call.prompt === "string" ? truncate(oneLine(call.prompt), 45) : "...";
-		text += `\n  ${theme.fg("accent", agent)}${session}${context}${theme.fg("dim", ` ${preview}`)}`;
+		text += `\n  ${theme.fg("accent", agent)}${session}${model}${context}${theme.fg("dim", ` ${preview}`)}`;
 	}
 	if (calls.length > 3) text += `\n  ${theme.fg("muted", `... +${calls.length - 3} more`)}`;
 	return new Text(text, 0, 0);

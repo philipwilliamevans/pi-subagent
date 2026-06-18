@@ -124,6 +124,7 @@ export function buildPiArgs(
   parentSessionPath: string | null,
   session: SubagentSessionDetails | undefined,
   persistentSessionDir: string | undefined,
+  callModel?: string,
 ): string[] {
   const args: string[] = [
     "--mode",
@@ -149,7 +150,7 @@ export function buildPiArgs(
     args.push("--no-session");
   }
 
-  const model = agent.model ?? inheritedCliArgs.fallbackModel;
+  const model = callModel ?? agent.model ?? inheritedCliArgs.fallbackModel;
   if (model) args.push("--model", model);
 
   const thinking = agent.thinking ?? inheritedCliArgs.fallbackThinking;
@@ -185,6 +186,8 @@ export interface RunAgentOptions {
   agentName: string;
   /** Prompt sent verbatim to the subagent. */
   prompt: string;
+  /** Per-call model override. */
+  callModel?: string;
   /** Effective working directory for this process. */
   callCwd?: string;
   /** Initial context for newly-created child conversations. */
@@ -223,6 +226,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     callIndex,
     agentName,
     prompt,
+    callModel,
     callCwd,
     initialContext,
     parentSessionSnapshotJsonl,
@@ -271,7 +275,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       messages: [],
       stderr: message,
       usage: emptyUsage(),
-      model: agent.model,
+      model: callModel ?? agent.model,
       stopReason: "error",
       errorMessage: message,
     };
@@ -288,7 +292,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     messages: [],
     stderr: "",
     usage: emptyUsage(),
-    model: agent.model,
+    model: callModel ?? agent.model,
   };
 
   if (signal?.aborted) {
@@ -338,6 +342,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       parentSessionTmpPath,
       session,
       persistentSessionDir,
+      callModel,
     );
     let wasAborted = false;
 

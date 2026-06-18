@@ -64,6 +64,9 @@ const CallItem = Type.Object({
   prompt: Type.String({
     description: getCallFieldSchemaDescription("prompt"),
   }),
+  model: Type.Optional(
+    Type.String({ description: getCallFieldSchemaDescription("model") }),
+  ),
   cwd: Type.Optional(
     Type.String({ description: getCallFieldSchemaDescription("cwd") }),
   ),
@@ -107,6 +110,7 @@ interface NormalizedCall {
   index: number;
   agent: string;
   prompt: string;
+  model?: string;
   effectiveCwd: string;
   initialContext: InitialContext;
   sessionHandle?: string;
@@ -353,6 +357,17 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
     }
     const prompt = call.prompt;
 
+    let model: string | undefined;
+    if (call.model !== undefined) {
+      if (typeof call.model !== "string") {
+        return { error: `calls[${index}].model must be a string when provided.` };
+      }
+      model = call.model.trim();
+      if (!model) {
+        return { error: `calls[${index}].model must not be empty when provided.` };
+      }
+    }
+
     const initialContext = parseInitialContext(call.initialContext);
     if (!initialContext) {
       return { error: `calls[${index}].initialContext must be "empty" or "parent".` };
@@ -395,6 +410,7 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
       index,
       agent,
       prompt,
+      model,
       effectiveCwd,
       initialContext,
       sessionHandle,
@@ -578,6 +594,7 @@ function makePlaceholderResult(call: NormalizedCall): SingleResult {
     messages: [],
     stderr: "",
     usage: emptyUsage(),
+    model: call.model,
   };
 }
 
@@ -876,6 +893,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
             callIndex: call.index,
             agentName: call.agent,
             prompt: call.prompt,
+            callModel: call.model,
             callCwd: call.effectiveCwd,
             initialContext: call.initialContext,
             parentSessionSnapshotJsonl,

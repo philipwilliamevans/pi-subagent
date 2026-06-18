@@ -311,6 +311,16 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
       ),
       ["--mode", "json", "-p", "--session-id", "subagent.abc123", "hello"],
     );
+
+    assert.deepEqual(
+      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined),
+      ["--mode", "json", "-p", "--no-session", "--model", "agent-model", "hello"],
+    );
+
+    assert.deepEqual(
+      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, "call-model"),
+      ["--mode", "json", "-p", "--no-session", "--model", "call-model", "hello"],
+    );
   } finally {
     cleanup();
   }

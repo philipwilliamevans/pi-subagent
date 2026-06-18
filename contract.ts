@@ -16,7 +16,7 @@ export interface DelegationGuardSummary {
 }
 
 interface CallFieldContract {
-  name: "agent" | "prompt" | "cwd" | "initialContext" | "session";
+  name: "agent" | "prompt" | "model" | "cwd" | "initialContext" | "session";
   required: boolean;
   schemaDescription: string;
   promptDescription: string;
@@ -37,6 +37,12 @@ export const CALL_FIELDS: CallFieldContract[] = [
     required: true,
     schemaDescription: "Prompt sent verbatim to the subagent for this call",
     promptDescription: "non-empty prompt sent verbatim to the subagent",
+  },
+  {
+    name: "model",
+    required: false,
+    schemaDescription: "Model to use for this call. Overrides the agent file's default model.",
+    promptDescription: "model to use for this call. Overrides the agent file's default model. If omitted, the agent's default model is used when configured; otherwise Pi uses the inherited/default model",
   },
   {
     name: "cwd",
@@ -86,7 +92,7 @@ function formatDelegationRules(): string {
 }
 
 export function formatSubagentUsageExample(): string {
-  return `Use exactly one top-level \`calls\` array:\n\`\`\`json\n{\n  "calls": [\n    {\n      "agent": "agent-name",\n      "prompt": "Prompt sent verbatim to the subagent",\n      "initialContext": "empty",\n      "session": "optional-logical-handle"\n    }\n  ]\n}\n\`\`\``;
+  return `Use exactly one top-level \`calls\` array:\n\`\`\`json\n{\n  "calls": [\n    {\n      "agent": "agent-name",\n      "prompt": "Prompt sent verbatim to the subagent",\n      "model": "optional-model",\n      "initialContext": "empty",\n      "session": "optional-logical-handle"\n    }\n  ]\n}\n\`\`\``;
 }
 
 export function formatSubagentUsageErrorExample(): string {
@@ -175,6 +181,6 @@ export function formatSubagentToolDescription(): string {
     "",
     "Multiple calls may run concurrently.",
     "",
-    'Example: { calls: [{ agent: "review", prompt: "Review this diff", session: "api-review", initialContext: "parent" }] }',
+    'Example: { calls: [{ agent: "review", prompt: "Review this diff", model: "anthropic/claude-sonnet-4", session: "api-review", initialContext: "parent" }] }',
   ].join("\n");
 }

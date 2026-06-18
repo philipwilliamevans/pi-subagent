@@ -129,7 +129,7 @@ You review code changes. Focus on substantive issues, cite files and lines, and 
 | --- | --- | --- | --- |
 | `name` | Yes | — | Agent identifier used in tool calls. |
 | `description` | Yes | — | What the agent does; shown to the main agent. |
-| `model` | No | Parent/default Pi model | Overrides the model for this agent. Supports provider-prefixed values such as `anthropic/claude-3-5-sonnet`. |
+| `model` | No | Parent/default Pi model | Sets the default model for this agent. A per-call `model` overrides it. Supports provider-prefixed values such as `anthropic/claude-3-5-sonnet`. |
 | `thinking` | No | Parent/default Pi thinking level | Sets the thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). |
 | `tools` | No | `read,bash,edit,write` | Comma-separated list of built-in tools to enable for this agent. |
 | `sessionPreference` | No | — | Advisory machine-readable hint for the main agent. One of `ephemeral`, `persistent`, or `either`. |
@@ -137,6 +137,7 @@ You review code changes. Focus on substantive issues, cite files and lines, and 
 
 Notes:
 
+- Agent `model` is a default for that agent, not a lock. A `model` supplied in a subagent call wins.
 - `tools` controls built-in tools. Extension tools remain available unless extensions are disabled.
 - `sessionPreference` and `sessionHint` only guide the main agent. They do not automatically create, require, or name persistent sessions.
 - `sessionHint` can be used by itself for free-form guidance; the extension does not infer `sessionPreference` from it.
@@ -169,7 +170,7 @@ Each subagent runs in a separate `pi` process:
 - No visibility into sibling subagents.
 - Its own model/tool/runtime loop.
 - Started with `PI_OFFLINE=1` to skip startup network operations and reduce latency.
-- Inherits relevant parent CLI configuration such as extensions, provider/theme/skill flags, model/thinking/tool defaults, and custom session storage when applicable.
+- Inherits relevant parent CLI configuration such as extensions, provider/theme/skill flags, model/thinking/tool defaults, and custom session storage when applicable. A per-call `model` overrides the agent file's default model.
 
 The main agent receives a concise text summary for each subagent call. Tool calls, usage, generated session IDs, and creation metadata are available to the TUI and tool result details; the text summary includes only the logical `session` handle in the call header when one was provided.
 
@@ -194,6 +195,7 @@ Each call supports:
 | --- | --- | --- | --- |
 | `agent` | Yes | — | Exact name of an available subagent. |
 | `prompt` | Yes | — | Non-empty prompt sent verbatim to the subagent. |
+| `model` | No | Agent/default Pi model | Model to use for this call. Overrides the agent file's default model. |
 | `cwd` | No | Parent cwd | Working directory for this subagent process. |
 | `initialContext` | No | `"empty"` | `"empty"` starts a newly-created child conversation without parent history. `"parent"` seeds a newly-created child conversation from the current parent session snapshot. Existing named sessions ignore this field. |
 | `session` | No | — | Logical handle for a persistent child Pi session. Use this for multi-turn specialist work. Requires a persisted parent Pi session. |
@@ -210,6 +212,22 @@ Each call supports:
   ]
 }
 ```
+
+#### Per-call model override
+
+```json
+{
+  "calls": [
+    {
+      "agent": "review",
+      "model": "anthropic/claude-sonnet-4",
+      "prompt": "Review correctness risks in the current diff."
+    }
+  ]
+}
+```
+
+If omitted, the agent file's `model` is used when configured; otherwise the child uses the inherited/default Pi model.
 
 #### Multiple parallel calls
 
