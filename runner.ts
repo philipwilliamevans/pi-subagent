@@ -166,6 +166,20 @@ export function buildPiArgs(
     }
   }
 
+  // Inherit Agentflow telemetry context from AGENTFLOW_* environment variables.
+  // When the parent launcher sets these vars (e.g. via the agentflow-pi.ts
+  // extension or an external wrapper), every child pi session inherits the
+  // same telemetry linkage — enabling traceability across subagent boundaries.
+  if (process.env.AGENTFLOW_ENABLED === "1") {
+    args.push("--agentflow");
+  }
+  if (process.env.AGENTFLOW_URL) {
+    args.push("--agentflow-url", process.env.AGENTFLOW_URL);
+  }
+  if (process.env.AGENTFLOW_WORKITEM_ID) {
+    args.push("--agentflow-workitem-id", process.env.AGENTFLOW_WORKITEM_ID);
+  }
+
   if (systemPromptPath) args.push("--append-system-prompt", systemPromptPath);
   args.push(prompt);
   return args;

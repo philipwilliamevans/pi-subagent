@@ -179,6 +179,37 @@ export function parseInheritedCliArgs(argv) {
       continue;
     }
 
+    // Agentflow telemetry flags — forwarded to every child so inherited
+    // telemetry context (work-item ID, endpoint URL) is preserved across
+    // subagent boundaries.  See runner.ts buildPiArgs for the env-var
+    // inheritance path.
+    if (flagName === "--agentflow") {
+      alwaysProxy.push(flagName);
+      i++;
+      continue;
+    }
+
+    if (flagName === "--agentflow-url") {
+      const [value, skip] = getValue({ allowDashValue: true });
+      if (value !== undefined) alwaysProxy.push(flagName, value);
+      i += skip;
+      continue;
+    }
+
+    if (flagName === "--agentflow-workitem-id") {
+      const [value, skip] = getValue({ allowDashValue: true });
+      if (value !== undefined) alwaysProxy.push(flagName, value);
+      i += skip;
+      continue;
+    }
+
+    if (flagName === "--agentflow-prompt") {
+      const [value, skip] = getValue({ allowDashValue: true });
+      if (value !== undefined) alwaysProxy.push(flagName, value);
+      i += skip;
+      continue;
+    }
+
     if (flagName === "--model") {
       const [value, skip] = getValue({ allowDashValue: true });
       if (value !== undefined) fallbackModel = value;
