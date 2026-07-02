@@ -55,7 +55,7 @@ test("forwards safe parent CLI flags and captures fallback model settings", () =
 });
 
 test("resolves relative extension paths against the parent cwd", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-cli-"));
+  const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-cli-")));
   const extensionDir = path.join(tmpDir, "local-extension");
   fs.mkdirSync(extensionDir);
 
@@ -86,7 +86,7 @@ test("resolves relative extension paths against the parent cwd", () => {
 });
 
 test("resolves inherited relative resource paths against the parent cwd", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-cli-"));
+  const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-cli-")));
   const skillPath = path.join(tmpDir, "skills", "research", "SKILL.md");
   const promptPath = path.join(tmpDir, "prompts", "review.md");
   const themePath = path.join(tmpDir, "themes", "custom.json");
@@ -173,7 +173,7 @@ test("does not inherit parent session identity flags", () => {
 });
 
 test("consumes dash-prefixed values for known value flags", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-cli-"));
+  const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-cli-")));
   const previousCwd = process.cwd();
   process.chdir(tmpDir);
 
