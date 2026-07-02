@@ -6,6 +6,12 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isResultError, isResultSuccess, normalizeCompletedResult } from "../types.ts";
 
+const AGENTFLOW_ENV_VARS = [
+  "AGENTFLOW_ENABLED",
+  "AGENTFLOW_URL",
+  "AGENTFLOW_WORKITEM_ID",
+];
+
 function createTestableRunnerModule() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-runner-"));
   const modulePath = path.join(tmpDir, "runner.testable.ts");
@@ -255,73 +261,367 @@ test("runAgent returns immediately when the signal is already aborted", async ()
 });
 
 test("buildPiArgs plans ephemeral and persistent session flags", async () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const previousEnv = {};
+  for (const key of AGENTFLOW_ENV_VARS) {
+    previousEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+
   try {
-    const { buildPiArgs } = await import(moduleUrl);
-    const agent = {
-      name: "review",
-      description: "reviewer",
-      source: "user",
-      systemPrompt: "",
-    };
-    const session = {
-      handle: "api-review",
-      id: "subagent.abc123",
-      name: "subagent: review · api-review",
-      cwd: "/repo",
-      created: true,
-      initialContextApplied: "parent",
-    };
+    const { moduleUrl, cleanup } = createTestableRunnerModule();
+    try {
+      const { buildPiArgs } = await import(moduleUrl);
+      const agent = {
+        name: "review",
+        description: "reviewer",
+        source: "user",
+        systemPrompt: "",
+      };
+      const session = {
+        handle: "api-review",
+        id: "subagent.abc123",
+        name: "subagent: review · api-review",
+        cwd: "/repo",
+        created: true,
+        initialContextApplied: "parent",
+      };
 
-    assert.deepEqual(
-      buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined),
-      ["--mode", "json", "-p", "--no-session", "hello"],
-    );
+      assert.deepEqual(
+        buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined),
+        ["--mode", "json", "-p", "--no-session", "hello"],
+      );
 
-    assert.deepEqual(
-      buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", undefined, undefined),
-      ["--mode", "json", "-p", "--session", "/tmp/parent.jsonl", "hello"],
-    );
+      assert.deepEqual(
+        buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", undefined, undefined),
+        ["--mode", "json", "-p", "--session", "/tmp/parent.jsonl", "hello"],
+      );
 
-    assert.deepEqual(
-      buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", session, undefined),
-      [
-        "--mode",
-        "json",
-        "-p",
-        "--fork",
-        "/tmp/parent.jsonl",
-        "--session-id",
-        "subagent.abc123",
-        "--name",
-        "subagent: review · api-review",
-        "hello",
-      ],
-    );
+      assert.deepEqual(
+        buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", session, undefined),
+        [
+          "--mode",
+          "json",
+          "-p",
+          "--fork",
+          "/tmp/parent.jsonl",
+          "--session-id",
+          "subagent.abc123",
+          "--name",
+          "subagent: review · api-review",
+          "hello",
+        ],
+      );
 
-    assert.deepEqual(
-      buildPiArgs(
-        agent,
+      assert.deepEqual(
+        buildPiArgs(
+          agent,
+          null,
+          "hello",
+          "parent",
+          "/tmp/parent.jsonl",
+          { ...session, created: false, initialContextApplied: null },
+          undefined,
+        ),
+        ["--mode", "json", "-p", "--session-id", "subagent.abc123", "hello"],
+      );
+
+      assert.deepEqual(
+        buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined),
+        ["--mode", "json", "-p", "--no-session", "--model", "agent-model", "hello"],
+      );
+
+      assert.deepEqual(
+        buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, "call-model"),
+        ["--mode", "json", "-p", "--no-session", "--model", "call-model", "hello"],
+      );
+    } finally {
+      cleanup();
+    }
+  } finally {
+    for (const key of AGENTFLOW_ENV_VARS) {
+      if (previousEnv[key] !== undefined) {
+        process.env[key] = previousEnv[key];
+      } else {
+        delete process.env[key];
+      }
+    }
+  }
+});
+
+test("buildPiArgs does not add Agentflow flags when env vars are absent", async () => {
+  const previousEnv = {};
+  for (const key of AGENTFLOW_ENV_VARS) {
+    previousEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+
+  try {
+    const { moduleUrl, cleanup } = createTestableRunnerModule();
+    try {
+      const { buildPiArgs } = await import(moduleUrl);
+      const agent = {
+        name: "review",
+        description: "reviewer",
+        source: "user",
+        systemPrompt: "",
+      };
+
+      const args = buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined);
+
+      assert.ok(args.includes("--no-session"));
+      assert.ok(args.includes("hello"));
+      assert.ok(!args.includes("--agentflow"));
+      assert.ok(!args.includes("--agentflow-url"));
+      assert.ok(!args.includes("--agentflow-workitem-id"));
+    } finally {
+      cleanup();
+    }
+  } finally {
+    for (const key of AGENTFLOW_ENV_VARS) {
+      if (previousEnv[key] !== undefined) {
+        process.env[key] = previousEnv[key];
+      } else {
+        delete process.env[key];
+      }
+    }
+  }
+});
+
+test("buildPiArgs adds --agentflow when AGENTFLOW_ENABLED=1", async () => {
+  const previousEnv = {};
+  for (const key of AGENTFLOW_ENV_VARS) {
+    previousEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+  process.env.AGENTFLOW_ENABLED = "1";
+
+  try {
+    const { moduleUrl, cleanup } = createTestableRunnerModule();
+    try {
+      const { buildPiArgs } = await import(moduleUrl);
+      const agent = {
+        name: "review",
+        description: "reviewer",
+        source: "user",
+        systemPrompt: "",
+      };
+
+      const args = buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined);
+
+      assert.ok(args.includes("--agentflow"));
+      assert.ok(!args.includes("--agentflow-url"));
+      assert.ok(!args.includes("--agentflow-workitem-id"));
+    } finally {
+      cleanup();
+    }
+  } finally {
+    for (const key of AGENTFLOW_ENV_VARS) {
+      if (previousEnv[key] !== undefined) {
+        process.env[key] = previousEnv[key];
+      } else {
+        delete process.env[key];
+      }
+    }
+  }
+});
+
+test("buildPiArgs adds --agentflow-url from AGENTFLOW_URL", async () => {
+  const previousEnv = {};
+  for (const key of AGENTFLOW_ENV_VARS) {
+    previousEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+  process.env.AGENTFLOW_URL = "http://127.0.0.1:8765";
+
+  try {
+    const { moduleUrl, cleanup } = createTestableRunnerModule();
+    try {
+      const { buildPiArgs } = await import(moduleUrl);
+      const agent = {
+        name: "review",
+        description: "reviewer",
+        source: "user",
+        systemPrompt: "",
+      };
+
+      const args = buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined);
+
+      assert.ok(!args.includes("--agentflow"));
+      const idx = args.indexOf("--agentflow-url");
+      assert.notEqual(idx, -1);
+      assert.equal(args[idx + 1], "http://127.0.0.1:8765");
+      assert.ok(!args.includes("--agentflow-workitem-id"));
+    } finally {
+      cleanup();
+    }
+  } finally {
+    for (const key of AGENTFLOW_ENV_VARS) {
+      if (previousEnv[key] !== undefined) {
+        process.env[key] = previousEnv[key];
+      } else {
+        delete process.env[key];
+      }
+    }
+  }
+});
+
+test("buildPiArgs adds --agentflow-workitem-id from AGENTFLOW_WORKITEM_ID", async () => {
+  const previousEnv = {};
+  for (const key of AGENTFLOW_ENV_VARS) {
+    previousEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+  process.env.AGENTFLOW_WORKITEM_ID = "62";
+
+  try {
+    const { moduleUrl, cleanup } = createTestableRunnerModule();
+    try {
+      const { buildPiArgs } = await import(moduleUrl);
+      const agent = {
+        name: "review",
+        description: "reviewer",
+        source: "user",
+        systemPrompt: "",
+      };
+
+      const args = buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined);
+
+      assert.ok(!args.includes("--agentflow"));
+      assert.ok(!args.includes("--agentflow-url"));
+      const idx = args.indexOf("--agentflow-workitem-id");
+      assert.notEqual(idx, -1);
+      assert.equal(args[idx + 1], "62");
+    } finally {
+      cleanup();
+    }
+  } finally {
+    for (const key of AGENTFLOW_ENV_VARS) {
+      if (previousEnv[key] !== undefined) {
+        process.env[key] = previousEnv[key];
+      } else {
+        delete process.env[key];
+      }
+    }
+  }
+});
+
+test("buildPiArgs adds all three Agentflow flags when all env vars are set", async () => {
+  const previousEnv = {};
+  for (const key of AGENTFLOW_ENV_VARS) {
+    previousEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+  process.env.AGENTFLOW_ENABLED = "1";
+  process.env.AGENTFLOW_URL = "http://127.0.0.1:8765";
+  process.env.AGENTFLOW_WORKITEM_ID = "62";
+
+  try {
+    const { moduleUrl, cleanup } = createTestableRunnerModule();
+    try {
+      const { buildPiArgs } = await import(moduleUrl);
+      const agent = {
+        name: "review",
+        description: "reviewer",
+        source: "user",
+        systemPrompt: "",
+      };
+
+      const args = buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined);
+
+      assert.ok(args.includes("--agentflow"));
+
+      const urlIdx = args.indexOf("--agentflow-url");
+      assert.notEqual(urlIdx, -1);
+      assert.equal(args[urlIdx + 1], "http://127.0.0.1:8765");
+
+      const idIdx = args.indexOf("--agentflow-workitem-id");
+      assert.notEqual(idIdx, -1);
+      assert.equal(args[idIdx + 1], "62");
+    } finally {
+      cleanup();
+    }
+  } finally {
+    for (const key of AGENTFLOW_ENV_VARS) {
+      if (previousEnv[key] !== undefined) {
+        process.env[key] = previousEnv[key];
+      } else {
+        delete process.env[key];
+      }
+    }
+  }
+});
+
+test("buildPiArgs agentflow flags coexist with extension, model, tools, and session flags", async () => {
+  const previousEnv = {};
+  for (const key of AGENTFLOW_ENV_VARS) {
+    previousEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+  process.env.AGENTFLOW_ENABLED = "1";
+  process.env.AGENTFLOW_URL = "http://127.0.0.1:8765";
+  process.env.AGENTFLOW_WORKITEM_ID = "62";
+
+  try {
+    const { moduleUrl, cleanup } = createTestableRunnerModule();
+    try {
+      const { buildPiArgs } = await import(moduleUrl);
+      const agent = {
+        name: "review",
+        description: "reviewer",
+        source: "user",
+        systemPrompt: "",
+      };
+      const session = {
+        handle: "test-session",
+        id: "subagent.def456",
+        name: "subagent: review · test",
+        cwd: "/repo",
+        created: true,
+        initialContextApplied: "parent",
+      };
+
+      const args = buildPiArgs(
+        { ...agent, model: "anthropic/claude-3-7-sonnet", thinking: "high", tools: ["read", "bash"] },
         null,
         "hello",
         "parent",
         "/tmp/parent.jsonl",
-        { ...session, created: false, initialContextApplied: null },
+        session,
         undefined,
-      ),
-      ["--mode", "json", "-p", "--session-id", "subagent.abc123", "hello"],
-    );
+        "call-model-override",
+      );
 
-    assert.deepEqual(
-      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined),
-      ["--mode", "json", "-p", "--no-session", "--model", "agent-model", "hello"],
-    );
+      // Agentflow flags present
+      assert.ok(args.includes("--agentflow"));
 
-    assert.deepEqual(
-      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, "call-model"),
-      ["--mode", "json", "-p", "--no-session", "--model", "call-model", "hello"],
-    );
+      const urlIdx = args.indexOf("--agentflow-url");
+      assert.notEqual(urlIdx, -1);
+      assert.equal(args[urlIdx + 1], "http://127.0.0.1:8765");
+
+      const idIdx = args.indexOf("--agentflow-workitem-id");
+      assert.notEqual(idIdx, -1);
+      assert.equal(args[idIdx + 1], "62");
+
+      // Other flags still present
+      assert.ok(args.includes("--model"));
+      assert.ok(args.includes("call-model-override"));
+      assert.ok(args.includes("--thinking"));
+      assert.ok(args.includes("high"));
+      assert.ok(args.includes("--tools"));
+      assert.ok(args.includes("--fork"));
+      assert.ok(args.includes("--session-id"));
+      assert.ok(args.includes("subagent.def456"));
+      assert.ok(args.includes("--name"));
+    } finally {
+      cleanup();
+    }
   } finally {
-    cleanup();
+    for (const key of AGENTFLOW_ENV_VARS) {
+      if (previousEnv[key] !== undefined) {
+        process.env[key] = previousEnv[key];
+      } else {
+        delete process.env[key];
+      }
+    }
   }
 });

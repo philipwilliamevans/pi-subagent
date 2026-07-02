@@ -206,3 +206,93 @@ test("consumes dash-prefixed values for known value flags", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("forwards --agentflow flag to every child", () => {
+  const parsed = parseInheritedCliArgs([
+    "/usr/bin/node",
+    "pi",
+    "--agentflow",
+    "--model",
+    "claude-sonnet-4",
+  ]);
+
+  assert.ok(parsed.alwaysProxy.includes("--agentflow"));
+});
+
+test("forwards --agentflow-url with its value", () => {
+  const parsed = parseInheritedCliArgs([
+    "/usr/bin/node",
+    "pi",
+    "--agentflow-url",
+    "http://127.0.0.1:8765",
+  ]);
+
+  const idx = parsed.alwaysProxy.indexOf("--agentflow-url");
+  assert.notEqual(idx, -1);
+  assert.equal(parsed.alwaysProxy[idx + 1], "http://127.0.0.1:8765");
+});
+
+test("forwards --agentflow-workitem-id with its value", () => {
+  const parsed = parseInheritedCliArgs([
+    "/usr/bin/node",
+    "pi",
+    "--agentflow-workitem-id",
+    "42",
+  ]);
+
+  const idx = parsed.alwaysProxy.indexOf("--agentflow-workitem-id");
+  assert.notEqual(idx, -1);
+  assert.equal(parsed.alwaysProxy[idx + 1], "42");
+});
+
+test("forwards --agentflow-prompt with its value", () => {
+  const parsed = parseInheritedCliArgs([
+    "/usr/bin/node",
+    "pi",
+    "--agentflow-prompt",
+    "Implement the feature",
+  ]);
+
+  const idx = parsed.alwaysProxy.indexOf("--agentflow-prompt");
+  assert.notEqual(idx, -1);
+  assert.equal(parsed.alwaysProxy[idx + 1], "Implement the feature");
+});
+
+test("agentflow flags coexist with extension, model, tools, and session flags", () => {
+  const parsed = parseInheritedCliArgs([
+    "/usr/bin/node",
+    "pi",
+    "--extension",
+    "npm:@mjakl/pi-subagent",
+    "--model",
+    "anthropic/claude-3-7-sonnet",
+    "--tools",
+    "read,bash",
+    "--no-session",
+    "--agentflow",
+    "--agentflow-url",
+    "http://127.0.0.1:8765",
+    "--agentflow-workitem-id",
+    "62",
+    "--agentflow-prompt",
+    "Implement Task\nWith care",
+  ]);
+
+  const idxUrl = parsed.alwaysProxy.indexOf("--agentflow-url");
+  assert.notEqual(idxUrl, -1);
+  assert.equal(parsed.alwaysProxy[idxUrl + 1], "http://127.0.0.1:8765");
+
+  const idxId = parsed.alwaysProxy.indexOf("--agentflow-workitem-id");
+  assert.notEqual(idxId, -1);
+  assert.equal(parsed.alwaysProxy[idxId + 1], "62");
+
+  const idxPrompt = parsed.alwaysProxy.indexOf("--agentflow-prompt");
+  assert.notEqual(idxPrompt, -1);
+  assert.equal(parsed.alwaysProxy[idxPrompt + 1], "Implement Task\nWith care");
+
+  assert.ok(parsed.alwaysProxy.includes("--agentflow"));
+  assert.ok(parsed.extensionArgs.includes("--extension"));
+  assert.ok(parsed.extensionArgs.includes("npm:@mjakl/pi-subagent"));
+  assert.equal(parsed.fallbackModel, "anthropic/claude-3-7-sonnet");
+  assert.equal(parsed.fallbackTools, "read,bash");
+});
