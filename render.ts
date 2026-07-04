@@ -7,6 +7,7 @@ import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { getProcessErrorText, getResultSummaryText } from "./runner-events.js";
 import {
+	type BackgroundJob,
 	type DisplayItem,
 	type InitialContext,
 	type SingleResult,
@@ -340,4 +341,281 @@ function renderCallsCollapsed(
 	}
 
 	return new Text(text, 0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Background subagent job formatting and rendering
+// ---------------------------------------------------------------------------
+
+function formatDuration(ms: number): string {
+	const seconds = Math.round(ms / 1000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const secs = seconds % 60;
+	return secs > 0 ? `${minutes}m ${secs}s` : `${minutes}m`;
+}
+
+function formatElapsed(createdAt: number, updatedAt: number): string {
+	return formatDuration(updatedAt - createdAt);
+}
+
+function formatAge(createdAt: number): string {
+	return formatDuration(Date.now() - createdAt);
+}
+
+function formatCallStatusLabel(r: SingleResult | undefined): string {
+	if (!r) return "queued";
+	if (r.exitCode === -1) return "running";
+	if (r.stopReason === "aborted") return "cancelled";
+	if (isResultError(r)) return "failed";
+	return "completed";
+}
+
+/**
+ * Compact summary of a completed background job, suitable for message injection.
+ * Supports completed, failed, and cancelled states.
+ */
+export function formatBackgroundCompletion(job: BackgroundJob): string {
+	const duration = job.createdAt ? formatDuration(Date.now() - job.createdAt) : "";
+	const durationLine = duration ? ` (took ${duration})` : "";
+
+	let verb: string;
+	let statusLabel: string;
+	if (job.status === "cancelled") {
+		verb = "Background subagent job";
+		statusLabel = "was cancelled";
+	} else if (job.status === "failed") {
+		verb = "Background subagent job";
+		statusLabel = "completed with errors";
+	} else {
+		verb = "Background subagent job";
+		statusLabel = "completed successfully";
+	}
+
+	const lines: string[] = [
+		`${verb} \`${job.id}\` ${statusLabel}${durationLine}.`,
+		"",
+	];
+
+	if (job.results) {
+		for (const [index, r] of job.results.entries()) {
+			const callStatus = formatCallStatusLabel(r);
+			const agentName = r.agent || job.calls[index]?.agent || `call ${index}`;
+			const summary = getResultSummaryText(r);
+			const excerpt = summary && summary !== "(no output)"
+				? `\n  ${truncate(summary, 200).replace(/\n/g, "\n  ")}`
+				: "";
+			lines.push(`- ${agentName} call ${index + 1}: ${callStatus}${excerpt}`);
+		}
+	}
+
+	if (job.error) {
+		lines.push("", `Error: ${job.error}`);
+	}
+
+	return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Status formatting helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a single call's status line for subagent_status output.
+ */
+function formatCallStatusLine(call: BackgroundJob["calls"][number], r: SingleResult | undefined): string {
+	const label = formatCallStatusLabel(r);
+	const elapsed = r && r.exitCode !== -1
+		? ` (took ${formatElapsed(r.messages[0]?.timestamp ? r.messages[0].timestamp : 0, Date.now())})`
+		: r && r.exitCode === -1
+			? ` (${formatAge(call.index === 0 ? Date.now() : 0)} elapsed)`
+			: "";
+	return `  ${call.agent} — ${label}${elapsed}`;
+}
+
+/**
+ * Format the status of a single background job.
+ */
+export function formatJobStatus(job: BackgroundJob): string {
+	const age = job.createdAt ? formatAge(job.createdAt) : "";
+	const duration = job.results ? formatElapsed(job.createdAt, job.updatedAt) : "";
+
+	const callLines = job.calls.map((call, index) => {
+		const r = job.results?.[index];
+		return formatCallStatusLine(call, r);
+	});
+
+	const when = job.status === "running" || job.status === "cancelling"
+		? `started ${age} ago`
+		: `took ${duration} (finished ${age} ago)`;
+
+	return [
+		`${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}`,
+		...callLines,
+	].join("\n");
+}
+
+/**
+ * Format a list of all background jobs.
+ */
+export function formatJobList(jobs: BackgroundJob[]): string {
+	if (jobs.length === 0) return "No background subagent jobs.";
+
+	const lines: string[] = ["Background subagent jobs:", ""];
+	for (const job of jobs) {
+		const age = job.createdAt ? formatAge(job.createdAt) : "";
+		const duration = job.results ? formatElapsed(job.createdAt, job.updatedAt) : "";
+
+		let when: string;
+		if (job.status === "running" || job.status === "cancelling") {
+			when = `started ${age} ago`;
+		} else {
+			when = `took ${duration} (finished ${age} ago)`;
+		}
+		lines.push(`  ${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}`);
+	}
+
+	lines.push("");
+
+	const running = jobs.filter((j) => j.status === "running" || j.status === "cancelling").length;
+	const completed = jobs.filter((j) => j.status === "completed").length;
+	const failed = jobs.filter((j) => j.status === "failed").length;
+	const cancelled = jobs.filter((j) => j.status === "cancelled").length;
+	const parts: string[] = [];
+	if (running > 0) parts.push(`${running} running`);
+	if (completed > 0) parts.push(`${completed} completed`);
+	if (failed > 0) parts.push(`${failed} failed`);
+	if (cancelled > 0) parts.push(`${cancelled} cancelled`);
+	lines.push(parts.join(", "));
+
+	return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Render for subagent_start
+// ---------------------------------------------------------------------------
+
+/**
+ * Render for subagent_start tool call — shown in the TUI while being invoked.
+ */
+export function renderBackgroundCall(
+	args: Record<string, any>,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text {
+	const calls = Array.isArray(args.calls) ? args.calls : [];
+	const onComplete = typeof args.onComplete === "string" ? args.onComplete : "trigger";
+
+	let text =
+		theme.fg("toolTitle", theme.bold("subagent_start ")) +
+		theme.fg("accent", `${calls.length || "?"} call${calls.length === 1 ? "" : "s"}`) +
+		theme.fg("dim", ` · ${onComplete}`);
+
+	for (const call of calls.slice(0, 3)) {
+		const agent = typeof call.agent === "string" ? call.agent : "...";
+		const model = typeof call.model === "string" && call.model.trim()
+			? theme.fg("muted", ` model=${call.model.trim()}`)
+			: "";
+		const preview = typeof call.prompt === "string" ? truncate(oneLine(call.prompt), 45) : "...";
+		text += `\n  ${theme.fg("warning", agent)}${model}${theme.fg("dim", ` ${preview}`)}`;
+	}
+	if (calls.length > 3) text += `\n  ${theme.fg("muted", `... +${calls.length - 3} more`)}`;
+
+	return new Text(text, 0, 0);
+}
+
+/**
+ * Render for subagent_start tool result — shown immediately after starting.
+ */
+export function renderBackgroundResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+	_expanded: boolean,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text | Container {
+	const firstContent = result.content[0];
+	const text = firstContent?.type === "text" && firstContent.text ? firstContent.text : "";
+
+	if (!text) {
+		return new Text("Started background subagent job.", 0, 0);
+	}
+
+	const mdTheme = getMarkdownTheme();
+	const container = new Container();
+	container.addChild(new Text(theme.fg("success", "✓ ") + theme.fg("toolTitle", theme.bold("subagent_start ")) + theme.fg("muted", "started"), 0, 0));
+	container.addChild(new Spacer(1));
+	container.addChild(new Markdown(text.trim(), 0, 0, mdTheme));
+	return container;
+}
+
+// ---------------------------------------------------------------------------
+// Render for subagent_status
+// ---------------------------------------------------------------------------
+
+/**
+ * Render for subagent_status tool call.
+ */
+export function renderJobStatusCall(
+	args: Record<string, any>,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text {
+	const jobId = typeof args.jobId === "string" ? args.jobId : "(all)";
+	return new Text(
+		theme.fg("toolTitle", theme.bold("subagent_status ")) + theme.fg("dim", jobId),
+		0,
+		0,
+	);
+}
+
+/**
+ * Render for subagent_status tool result.
+ */
+export function renderJobStatusResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+	_expanded: boolean,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text {
+	const first = result.content[0];
+	const text = first?.type === "text" && first.text ? first.text : "(no status)";
+	return new Text(text, 0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Render for subagent_cancel
+// ---------------------------------------------------------------------------
+
+/**
+ * Render for subagent_cancel tool call.
+ */
+export function renderCancelCall(
+	args: Record<string, any>,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text {
+	const jobId = typeof args.jobId === "string" ? args.jobId : "?";
+	return new Text(
+		theme.fg("toolTitle", theme.bold("subagent_cancel ")) + theme.fg("warning", jobId),
+		0,
+		0,
+	);
+}
+
+/**
+ * Render for subagent_cancel tool result.
+ */
+export function renderCancelResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+	_expanded: boolean,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text | Container {
+	const first = result.content[0];
+	const text = first?.type === "text" && first.text ? first.text : "";
+
+	if (!text) {
+		return new Text("(no output)", 0, 0);
+	}
+
+	const mdTheme = getMarkdownTheme();
+	const container = new Container();
+	container.addChild(new Text(theme.fg("warning", "◐ ") + theme.fg("toolTitle", theme.bold("subagent_cancel ")) + theme.fg("muted", "cancel"), 0, 0));
+	container.addChild(new Spacer(1));
+	container.addChild(new Markdown(text.trim(), 0, 0, mdTheme));
+	return container;
 }

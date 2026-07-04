@@ -21,6 +21,44 @@ export interface SubagentSessionDetails {
 	initialContextApplied: InitialContext | null;
 }
 
+/** Normalized representation of a single subagent call (after validation). */
+export interface NormalizedCall {
+	index: number;
+	agent: string;
+	prompt: string;
+	model?: string;
+	effectiveCwd: string;
+	initialContext: InitialContext;
+	sessionHandle?: string;
+	session?: SubagentSessionDetails;
+}
+
+/** Background job status. */
+export type BackgroundJobStatus =
+  | "running"
+  | "cancelling"
+  | "cancelled"
+  | "completed"
+  | "failed";
+
+/** How to deliver completion of a background job. */
+export type BackgroundCompletionMode = "silent" | "message" | "trigger";
+
+/** In-memory background job tracking entry. */
+export interface BackgroundJob {
+	id: string;
+	createdAt: number;
+	updatedAt: number;
+	status: BackgroundJobStatus;
+	calls: NormalizedCall[];
+	promise: Promise<void>;
+	results?: SingleResult[];
+	error?: string;
+	onComplete: BackgroundCompletionMode;
+	/** AbortController for cancellation. Created when the job starts. */
+	abortController?: AbortController;
+}
+
 /** Aggregated token usage from a subagent run. */
 export interface UsageStats {
 	input: number;

@@ -158,6 +158,18 @@ ${formatCallFieldList()}
 Rules:
 ${formatDelegationRules()}
 
+### Background subagent jobs
+
+Use the \`subagent_start\` tool to fire-and-forget work in the background.
+The tool returns immediately; results arrive via an auto-injected message.
+By default the completion auto-triggers a parent turn — just omit \`onComplete\`.
+
+Check status anytime with \`subagent_status\` (omit \`jobId\` to list all).
+Cancel a running job with \`subagent_cancel\` (requires \`confirm: true\`).
+
+Background jobs do not support persistent sessions (\`session\`).
+Omit \`session\` for background delegation.
+
 ### Runtime delegation guards
 
 - Max depth: current depth ${guards.currentDepth}, max depth ${guards.maxDepth}
@@ -182,5 +194,62 @@ export function formatSubagentToolDescription(): string {
     "Multiple calls may run concurrently.",
     "",
     'Example: { calls: [{ agent: "review", prompt: "Review this diff", model: "anthropic/claude-sonnet-4", session: "api-review", initialContext: "parent" }] }',
+  ].join("\n");
+}
+
+export function formatSubagentStartToolDescription(): string {
+  return [
+    "Start background subagent jobs. Like `subagent` but returns immediately.",
+    "",
+    "By default, completion auto-triggers a parent turn — just omit `onComplete`.",
+    "",
+    "Background jobs run in the same working tree and may edit files concurrently.",
+    "Give each call a clearly disjoint scope.",
+    "",
+    "Each call in the `calls` array requires `agent` and `prompt`.",
+    "",
+    "Fields (per call):",
+    formatCallFieldList(),
+    "",
+    "Optional top-level field `onComplete` (default: \"trigger\"):",
+    '  - `"trigger"` — inject a completion message and trigger a parent turn (default).',
+    '  - `"message"` — inject a completion message without triggering a turn.',
+    '  - `"silent"` — record in memory only; no message injected.',
+    "",
+    "Restrictions:",
+    "- Only available from the root parent Pi session (not from subagents).",
+    "- Persistent sessions (`session`) are not supported in background mode.",
+    `- Maximum ${2} concurrent background jobs.`,
+    "- `initialContext: \"parent\"` is not yet supported.",
+    "",
+    "Example (onComplete defaults to trigger, so you can omit it):",
+    '  { "calls": [{ "agent": "explorer", "prompt": "Find all test files" }] }',
+  ].join("\n");
+}
+
+export function formatSubagentStatusToolDescription(): string {
+  return [
+    "Query the status of a background subagent job.",
+    "",
+    "Provide a `jobId` to inspect a specific job. Omit `jobId` to list all known jobs.",
+    "Read-only. No confirmation needed.",
+    "",
+    "Examples:",
+    '  { "jobId": "subjob_abc123" }',
+    '  {}',
+  ].join("\n");
+}
+
+export function formatSubagentCancelToolDescription(): string {
+  return [
+    "Cancel a running background subagent job.",
+    "",
+    "Terminates all running subagent processes in the job and marks it as cancelled.",
+    "A cancellation message is injected into the session when the job has stopped.",
+    "",
+    "Requires `confirm: true` to proceed. Without it, returns a dry-run message.",
+    "",
+    "Example:",
+    '  { "jobId": "subjob_abc123", "confirm": true }',
   ].join("\n");
 }

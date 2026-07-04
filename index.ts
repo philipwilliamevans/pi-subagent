@@ -13,19 +13,45 @@ import { type ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-age
 import { Type } from "typebox";
 import { type AgentConfig, STARTER_AGENT_NAME, discoverAgentsWithStarter } from "./agents.js";
 import {
+  getActiveBackgroundJobCount,
+  generateJobId,
+  MAX_BACKGROUND_JOBS,
+  registerBackgroundJob,
+  getBackgroundJob,
+  getAllBackgroundJobs,
+} from "./background-jobs.js";
+import {
   CALLS_SCHEMA_DESCRIPTION,
   formatAvailableSubagentsPrompt,
+  formatSubagentCancelToolDescription,
+  formatSubagentStartToolDescription,
+  formatSubagentStatusToolDescription,
   formatSubagentToolDescription,
   formatSubagentUsageErrorExample,
   getCallFieldSchemaDescription,
 } from "./contract.js";
-import { renderCall, renderResult } from "./render.js";
+import {
+  formatBackgroundCompletion,
+  formatJobList,
+  formatJobStatus,
+  renderBackgroundCall,
+  renderBackgroundResult,
+  renderCall,
+  renderCancelCall,
+  renderCancelResult,
+  renderJobStatusCall,
+  renderJobStatusResult,
+  renderResult,
+} from "./render.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
 import { getResultSummaryText } from "./runner-events.js";
 import { mapConcurrent, runAgent } from "./runner.js";
 import { acquireSessionLocks, releaseSessionLocks, type SessionLockTarget } from "./session-lock.js";
 import {
+  type BackgroundCompletionMode,
+  type BackgroundJob,
   type InitialContext,
+  type NormalizedCall,
   type SingleResult,
   type SubagentDetails,
   type SubagentSessionDetails,
@@ -89,6 +115,42 @@ const SubagentParams = Type.Object({
   }),
 });
 
+const SubagentStartParams = Type.Object({
+  calls: Type.Array(CallItem, {
+    description: CALLS_SCHEMA_DESCRIPTION,
+  }),
+  onComplete: Type.Optional(
+    Type.Union(
+      [Type.Literal("message"), Type.Literal("trigger"), Type.Literal("silent")],
+      {
+        description:
+          'How to deliver completion: "trigger" (default) injects a message and triggers a parent turn; "message" injects without triggering; "silent" records in memory only.',
+        default: "trigger",
+      },
+    ),
+  ),
+});
+
+const SubagentStatusParams = Type.Object({
+  jobId: Type.Optional(
+    Type.String({
+      description: "Job ID to inspect. Omit to list all jobs.",
+    }),
+  ),
+});
+
+const SubagentCancelParams = Type.Object({
+  jobId: Type.String({
+    description: "ID of the background job to cancel.",
+  }),
+  confirm: Type.Optional(
+    Type.Boolean({
+      description: "Explicit confirmation flag.",
+      default: false,
+    }),
+  ),
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -104,17 +166,6 @@ interface DelegationDepthConfig {
 interface SessionSnapshotSource {
   getHeader: () => unknown;
   getBranch: () => unknown[];
-}
-
-interface NormalizedCall {
-  index: number;
-  agent: string;
-  prompt: string;
-  model?: string;
-  effectiveCwd: string;
-  initialContext: InitialContext;
-  sessionHandle?: string;
-  session?: SubagentSessionDetails;
 }
 
 interface NormalizedCallsResult {
@@ -840,10 +891,278 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       renderResult: (result, { expanded }, theme) =>
         renderResult(result, expanded, theme),
     });
+
+    // -----------------------------------------------------------------------
+    // subagent_start — background subagent jobs
+    // -----------------------------------------------------------------------
+
+    pi.registerTool({
+      name: "subagent_start",
+      label: "Start background subagent",
+      description: formatSubagentStartToolDescription(),
+      parameters: SubagentStartParams,
+
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+        const discovery = starterDiscovery.discovery;
+        const { agents } = discovery;
+        const makeDetails = makeDetailsFactory(discovery.projectAgentsDir);
+
+        // --- Root-only guard ---
+        if (currentDepth > 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Background subagent jobs can only be started from the root parent Pi session, not from a subagent. Use the synchronous `subagent` tool for nested delegation.",
+              },
+            ],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+
+        // --- Validate calls ---
+        const normalized = normalizeCalls(params.calls, ctx.cwd);
+        if (normalized.error || !normalized.calls) {
+          return {
+            content: [{ type: "text", text: normalized.error ?? "Invalid subagent_start parameters." }],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+        const calls = normalized.calls;
+
+        // --- Reject persistent sessions in background mode ---
+        for (const call of calls) {
+          if (call.sessionHandle) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Background subagent calls cannot use persistent sessions. calls[${call.index}] specifies session="${call.sessionHandle}". Omit \`session\` for background delegation.`,
+                },
+              ],
+              details: makeDetails([]),
+              isError: true,
+            };
+          }
+        }
+
+        // --- Reject initialContext "parent" when no snapshot possible ---
+        for (const call of calls) {
+          if (call.initialContext === "parent") {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Background subagent calls with initialContext="parent" are not yet supported in this thin slice. calls[${call.index}] requests parent context. Use initialContext="empty" or the synchronous subagent tool.`,
+                },
+              ],
+              details: makeDetails([]),
+              isError: true,
+            };
+          }
+        }
+
+        // --- Check max concurrent background jobs ---
+        if (getActiveBackgroundJobCount() >= MAX_BACKGROUND_JOBS) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Too many background subagent jobs already running (max ${MAX_BACKGROUND_JOBS}). Wait for a running job to complete or use the synchronous \`subagent\` tool.`,
+              },
+            ],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+
+        // --- Cycle prevention ---
+        const requested = new Set(calls.map((call) => call.agent));
+        if (preventCycles) {
+          const cycleViolations = getCycleViolations(requested, ancestorAgentStack);
+          if (cycleViolations.length > 0) {
+            const stackText =
+              ancestorAgentStack.length > 0
+                ? ancestorAgentStack.join(" -> ")
+                : "(root)";
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Blocked: delegation cycle detected. Requested agent(s) already in the delegation stack: ${cycleViolations.join(", ")}.
+Current stack: ${stackText}
+
+This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A).`,
+                },
+              ],
+              details: makeDetails([]),
+              isError: true,
+            };
+          }
+        }
+
+        // --- Resolve onComplete mode ---
+        const onComplete: BackgroundCompletionMode =
+          params.onComplete === undefined ? "trigger" : params.onComplete;
+
+        // --- Create background job ---
+        const jobId = generateJobId();
+        const createdAt = Date.now();
+        const abortController = new AbortController();
+
+        const job: BackgroundJob = {
+          id: jobId,
+          createdAt,
+          updatedAt: createdAt,
+          status: "running",
+          calls,
+          promise: Promise.resolve(),
+          onComplete,
+          abortController,
+        };
+
+        // Populate promise with async execution.
+        job.promise = runBackgroundSubagentJob(
+          job,
+          agents,
+          ctx.cwd,
+          makeDetails,
+        );
+
+        registerBackgroundJob(job);
+
+        // --- Immediate return ---
+        const callList = calls
+          .map((c) => `  - ${c.agent}: ${c.prompt.slice(0, 60)}${c.prompt.length > 60 ? "..." : ""}`)
+          .join("\n");
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Started background subagent job \`${jobId}\` with ${calls.length} call${calls.length === 1 ? "" : "s"}.\n\n${callList}\n\nThe result will be posted to this session when complete.\n\n**Warning:** Background subagents run in the same working tree and may edit files concurrently. Give each subagent a clearly disjoint scope.`,
+            },
+          ],
+          details: makeDetails([]),
+        };
+      },
+
+      renderCall: (args, theme) => renderBackgroundCall(args, theme),
+      renderResult: (result, { expanded }, theme) =>
+        renderBackgroundResult(result, expanded, theme),
+    });
+
+    // -----------------------------------------------------------------------
+    // subagent_status — query background job state
+    // -----------------------------------------------------------------------
+
+    pi.registerTool({
+      name: "subagent_status",
+      label: "Background subagent status",
+      description: formatSubagentStatusToolDescription(),
+      parameters: SubagentStatusParams,
+
+      async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+        const { jobId } = params;
+
+        if (jobId !== undefined) {
+          // Specific job lookup
+          const job = getBackgroundJob(jobId);
+          if (!job) {
+            const ids = getAllBackgroundJobs().map((j) => `  ${j.id} (${j.status})`).join("\n");
+            const hint = ids ? `Known jobs:\n${ids}` : "No background subagent jobs.";
+            return {
+              content: [{ type: "text", text: `Unknown background job: \`${jobId}\`.\n${hint}` }],
+              isError: true,
+            };
+          }
+          return {
+            content: [{ type: "text", text: formatJobStatus(job) }],
+          };
+        }
+
+        // List all jobs
+        const jobs = getAllBackgroundJobs();
+        return {
+          content: [{ type: "text", text: formatJobList(jobs) }],
+        };
+      },
+
+      renderCall: (args, theme) => renderJobStatusCall(args, theme),
+      renderResult: (result, { expanded }, theme) =>
+        renderJobStatusResult(result, expanded, theme),
+    });
+
+    // -----------------------------------------------------------------------
+    // subagent_cancel — terminate a running background job
+    // -----------------------------------------------------------------------
+
+    pi.registerTool({
+      name: "subagent_cancel",
+      label: "Cancel background subagent",
+      description: formatSubagentCancelToolDescription(),
+      parameters: SubagentCancelParams,
+
+      async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+        const { jobId, confirm } = params;
+
+        const job = getBackgroundJob(jobId);
+        if (!job) {
+          return {
+            content: [{ type: "text", text: `Unknown background job: \`${jobId}\`. Use \`subagent_status\` to list active jobs.` }],
+            isError: true,
+          };
+        }
+
+        if (job.status !== "running") {
+          return {
+            content: [{ type: "text", text: `Job \`${jobId}\` is already ${job.status}. Nothing to cancel.` }],
+            isError: true,
+          };
+        }
+
+        if (!confirm) {
+          const duration = job.createdAt
+            ? `${Math.round((Date.now() - job.createdAt) / 1000)}s`
+            : "";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Dry-run: would cancel background job \`${jobId}\` with ${job.calls.length} running call${job.calls.length === 1 ? "" : "s"}${duration ? ` (started ${duration} ago)` : ""}. Pass "confirm": true to proceed.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Proceed with cancellation
+        job.status = "cancelling";
+        job.updatedAt = Date.now();
+
+        job.abortController?.abort();
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Cancelling background job \`${jobId}\`...\n\nThe subagent processes will be terminated. A cancellation message will be posted when the job has stopped.`,
+            },
+          ],
+        };
+      },
+
+      renderCall: (args, theme) => renderCancelCall(args, theme),
+      renderResult: (result, { expanded }, theme) =>
+        renderCancelResult(result, expanded, theme),
+    });
   }
 
   // -----------------------------------------------------------------------
-  // Call execution
+  // Call execution (synchronous)
   // -----------------------------------------------------------------------
 
   async function executeCalls(
@@ -932,5 +1251,91 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       details: makeDetails(results),
       isError: hasErrors || undefined,
     };
+  }
+
+  // -----------------------------------------------------------------------
+  // Background job helpers
+  // -----------------------------------------------------------------------
+
+  const MAX_BACKGROUND_CONCURRENCY = 2;
+
+  /**
+   * Inject a completion message into the parent session.
+   */
+  function postCompletionMessage(job: BackgroundJob): void {
+    if (job.onComplete === "silent") return;
+
+    pi.sendMessage(
+      {
+        customType: "subagent-background-result",
+        display: true,
+        content: [{ type: "text", text: formatBackgroundCompletion(job) }],
+        details: {
+          jobId: job.id,
+          status: job.status,
+          results: job.results,
+          error: job.error,
+        },
+      },
+      {
+        deliverAs: "followUp",
+        triggerTurn: job.onComplete === "trigger",
+      },
+    );
+  }
+
+  /**
+   * Execute a background job's calls and update its state upon completion.
+   */
+  async function runBackgroundSubagentJob(
+    job: BackgroundJob,
+    agents: AgentConfig[],
+    defaultCwd: string,
+    makeDetails: ReturnType<typeof makeDetailsFactory>,
+  ): Promise<void> {
+    try {
+      const results = await mapConcurrent(
+        job.calls,
+        MAX_BACKGROUND_CONCURRENCY,
+        async (call) => {
+          return await runAgent({
+            cwd: defaultCwd,
+            agents,
+            callIndex: call.index,
+            agentName: call.agent,
+            prompt: call.prompt,
+            callModel: call.model,
+            callCwd: call.effectiveCwd,
+            initialContext: call.initialContext,
+            parentSessionSnapshotJsonl: undefined,
+            session: undefined,
+            parentDepth: currentDepth,
+            parentAgentStack: ancestorAgentStack,
+            maxDepth,
+            preventCycles,
+            signal: job.abortController?.signal,
+            onUpdate: undefined,
+            makeDetails,
+          });
+        },
+      );
+
+      // Determine final status. Cancellation takes priority.
+      if (job.status === "cancelling") {
+        job.status = "cancelled";
+      } else {
+        const hasError = results.some((r) => isResultError(r));
+        job.status = hasError ? "failed" : "completed";
+      }
+
+      job.results = results;
+      job.updatedAt = Date.now();
+      postCompletionMessage(job);
+    } catch (error) {
+      job.status = "failed";
+      job.error = error instanceof Error ? error.message : String(error);
+      job.updatedAt = Date.now();
+      postCompletionMessage(job);
+    }
   }
 }
