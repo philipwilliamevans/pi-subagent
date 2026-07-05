@@ -123,7 +123,6 @@ function hydrateJob(state: PersistedJobState): BackgroundJob {
     // Unserializable — set to safe defaults
     promise: Promise.resolve(),
     abortController: undefined,
-    intermediateResults: undefined,
   };
 }
 

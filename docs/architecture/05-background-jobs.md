@@ -28,7 +28,6 @@ Jobs that were `running` or `cancelling` when the process exited are reloaded wi
 - normalized `calls`
 - per-call `callStates`
 - final `results`
-- optional `intermediateResults`
 - optional `error`
 - `onComplete`
 - `AbortController`
@@ -52,10 +51,7 @@ The child processes still run in the same working tree, so background agents can
 
 `runBackgroundSubagentJob` executes calls with concurrency 2 through the same `runAgent` path used by foreground calls.
 
-Streaming partial updates are captured into:
-
-- `job.intermediateResults`
-- per-call lifecycle phase
+Streaming partial updates are captured into per-call lifecycle state:
 - tool call counts
 - recent activity text for status output
 

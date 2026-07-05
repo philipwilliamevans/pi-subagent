@@ -1556,9 +1556,6 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
     defaultCwd: string,
     makeDetails: ReturnType<typeof makeDetailsFactory>,
   ): Promise<void> {
-    // Initialize intermediate results for streaming
-    job.intermediateResults = job.calls.map((call) => makePlaceholderResult(call));
-
     try {
       const results = await mapConcurrent(
         job.calls,
@@ -1588,10 +1585,6 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
             onUpdate: (partial) => {
               const details = partial.details as SubagentDetails | undefined;
               if (details?.results?.[0]) {
-                // Store intermediate result for status queries
-                if (job.intermediateResults) {
-                  job.intermediateResults[index] = details.results[0];
-                }
                 updateCallStateFromPartial(cs, details.results[0]);
               }
             },
@@ -1604,9 +1597,6 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           return result;
         },
       );
-
-      // Clean up intermediate results
-      job.intermediateResults = undefined;
 
       // Determine final status. Cancellation takes priority.
       if (job.status === "cancelling") {
@@ -1628,7 +1618,6 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
 
       postCompletionMessage(job);
     } catch (error) {
-      job.intermediateResults = undefined;
       job.status = "failed";
       job.updatedAt = Date.now();
       job.error = error instanceof Error ? error.message : String(error);

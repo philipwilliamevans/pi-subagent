@@ -422,14 +422,13 @@ test("listPersistedJobIds returns empty when no jobs directory", () => {
 // No unserializable fields leak into persisted state
 // ---------------------------------------------------------------------------
 
-test("persisted state.json excludes promise, abortController, intermediateResults", () => {
+test("persisted state.json excludes promise, abortController", () => {
   const baseDir = createTempBase();
   try {
     const job = makeMinimalJob("subjob_no_leak_001");
     // These are set on the live object but should not be serialized
     job.promise = "should not appear";
     job.abortController = "should not appear";
-    job.intermediateResults = "should not appear";
 
     storeModule.persistJobState(baseDir, job);
 
@@ -443,7 +442,6 @@ test("persisted state.json excludes promise, abortController, intermediateResult
     const raw = JSON.parse(fs.readFileSync(statePath, "utf-8"));
     assert.equal(raw.promise, undefined);
     assert.equal(raw.abortController, undefined);
-    assert.equal(raw.intermediateResults, undefined);
     assert.equal(raw.jobId, "subjob_no_leak_001");
   } finally {
     fs.rmSync(baseDir, { recursive: true, force: true });

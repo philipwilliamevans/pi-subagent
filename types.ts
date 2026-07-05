@@ -91,8 +91,7 @@ export interface BackgroundJob {
 	abortController?: AbortController;
 	/** Per-call lifecycle states, populated at job creation. */
 	callStates: CallState[];
-	/** Streaming partial results, updated as calls progress. */
-	intermediateResults?: SingleResult[];
+
 	/** Worktree execution mode (defaults to "shared" when unset). */
 	worktreeMode?: WorktreeMode;
 	/** Declared file/path scope for this job, if provided by the caller. */
