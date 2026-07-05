@@ -1,0 +1,67 @@
+# Operational Limits and Risk Areas
+
+This file captures the non-obvious constraints that matter when maintaining or extending `pi-subagent`.
+
+## Runtime limits
+
+| Limit | Value | Where |
+| --- | --- | --- |
+| Calls per foreground invocation | 8 | `MAX_CALLS` in [`index.ts`](../../index.ts) |
+| Foreground concurrent child processes | 4 | `MAX_CONCURRENCY` in [`index.ts`](../../index.ts) |
+| Foreground progress heartbeat | 1000 ms | `CALLS_HEARTBEAT_MS` in [`index.ts`](../../index.ts) |
+| Default max delegation depth | 3 | `DEFAULT_MAX_DELEGATION_DEPTH` in [`index.ts`](../../index.ts) |
+| Background active jobs | 2 | `MAX_BACKGROUND_JOBS` in [`background-jobs.ts`](../../background-jobs.ts) |
+| Background concurrent calls per job | 2 | `MAX_BACKGROUND_CONCURRENCY` in [`index.ts`](../../index.ts) |
+| Non-persistent semantic completion grace | 250 ms | `AGENT_END_GRACE_MS` in [`runner.ts`](../../runner.ts) |
+| SIGKILL timeout after SIGTERM | 5000 ms | `SIGKILL_TIMEOUT_MS` in [`runner.ts`](../../runner.ts) |
+| Persistent session post-completion exit timeout | 30000 ms | `PERSISTENT_SESSION_EXIT_TIMEOUT_MS` in [`runner.ts`](../../runner.ts) |
+| Session lock heartbeat | 30000 ms | [`session-lock.ts`](../../session-lock.ts) |
+| Stale lock threshold | 2 minutes | [`session-lock.ts`](../../session-lock.ts) |
+
+## Delegation guard configuration
+
+Delegation depth and cycle behavior can come from:
+
+- environment variables
+- CLI arguments
+- Pi runtime flags
+- defaults
+
+Depth is propagated to children through environment variables. Cycle prevention blocks delegation to any agent name already present in the ancestor stack.
+
+## Known architectural tradeoffs
+
+### Background jobs are not durable
+
+The job registry is in memory. This is simple and works for live parent sessions, but jobs and results are lost if the extension process exits.
+
+### Background jobs share the working tree
+
+Background child processes run in the same filesystem workspace. The extension warns callers but does not serialize file edits or enforce scope separation.
+
+### Session locks are advisory
+
+Locks are filesystem directories with owner metadata. They protect against normal concurrent use, but stale recovery is manual and there is no cross-machine coordination beyond the shared filesystem.
+
+### Contract and implementation must stay aligned
+
+`contract.ts` centralizes wording, but schema definitions and runtime validation still live in `index.ts`. Changes to accepted parameters should update both.
+
+### Event handling depends on Pi JSON event shape
+
+`runner-events.js` recognizes a small set of event types. If Pi changes its JSON-mode event shape, final output, usage, or semantic completion could drift.
+
+### Process termination is semantic
+
+For ephemeral calls, the wrapper can terminate the child after observing `agent_end` and assistant output. This keeps calls responsive, but it relies on the event stream being authoritative.
+
+## Change checklist
+
+Before changing architecture-sensitive code:
+
+1. Update contract text and runtime validation together.
+2. Add or adjust tests for process arguments, result normalization, and rendering when relevant.
+3. Confirm persistent session changes handle duplicate calls, active calls, filesystem locks, and custom session directories.
+4. Confirm background job changes handle status, cancellation, completion delivery, and `subagent_result`.
+5. Keep generated package contents in sync with `package.json.files` if new runtime files are needed in the npm package.
+

@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pi Subagent Architecture</title>
+  <style>
+    :root {
+      --bg: #f7f7f2;
+      --panel: #ffffff;
+      --ink: #1d2433;
+      --muted: #5d6878;
+      --line: #cfd6dc;
+      --accent: #2458a6;
+      --accent-2: #0f766e;
+      --accent-3: #8a4b0f;
+      --risk: #a33232;
+      --soft-blue: #e8f0fb;
+      --soft-green: #e5f4ef;
+      --soft-amber: #f7ecd9;
+      --soft-red: #f8e7e7;
+      --shadow: 0 12px 30px rgba(29, 36, 51, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    header {
+      background: #1d2433;
+      color: #fff;
+      padding: 36px clamp(20px, 5vw, 64px) 30px;
+    }
+
+    header h1 {
+      margin: 0 0 10px;
+      font-size: clamp(30px, 4vw, 52px);
+      line-height: 1.05;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    header p {
+      max-width: 900px;
+      margin: 0;
+      color: #d6deea;
+      font-size: 17px;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(255, 255, 255, 0.94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(12px);
+      padding: 10px clamp(20px, 5vw, 64px);
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+    }
+
+    nav a {
+      color: var(--accent);
+      text-decoration: none;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 6px;
+      padding: 6px 10px;
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    main {
+      padding: 28px clamp(20px, 5vw, 64px) 56px;
+      max-width: 1320px;
+      margin: 0 auto;
+    }
+
+    section {
+      margin: 0 0 28px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 24px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.94em;
+      background: rgba(36, 88, 166, 0.08);
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .compact {
+      box-shadow: none;
+      padding: 13px;
+    }
+
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 8px;
+      background: var(--soft-blue);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .flow {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      overflow-x: auto;
+      box-shadow: var(--shadow);
+    }
+
+    svg {
+      min-width: 1040px;
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .module {
+      fill: #fff;
+      stroke: #9aa7b5;
+      stroke-width: 1.2;
+      rx: 8;
+    }
+
+    .module-blue {
+      fill: var(--soft-blue);
+      stroke: #8eb0dc;
+    }
+
+    .module-green {
+      fill: var(--soft-green);
+      stroke: #85bcae;
+    }
+
+    .module-amber {
+      fill: var(--soft-amber);
+      stroke: #d1a463;
+    }
+
+    .module-red {
+      fill: var(--soft-red);
+      stroke: #d69797;
+    }
+
+    .svg-title {
+      font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      fill: var(--ink);
+      letter-spacing: 0;
+    }
+
+    .svg-text {
+      font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      fill: var(--muted);
+      letter-spacing: 0;
+    }
+
+    .arrow {
+      fill: none;
+      stroke: #687588;
+      stroke-width: 1.6;
+      marker-end: url(#arrowhead);
+    }
+
+    .dash {
+      stroke-dasharray: 5 5;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    th,
+    td {
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      padding: 10px 12px;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eef2f5;
+      font-size: 13px;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    ul {
+      margin: 8px 0 0 18px;
+      padding: 0;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent-3);
+      background: #fff9ee;
+      padding: 12px 14px;
+      border-radius: 0 8px 8px 0;
+    }
+
+    .risk {
+      border-left-color: var(--risk);
+      background: #fff4f4;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    footer {
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+      padding-top: 16px;
+      margin-top: 32px;
+    }
+
+    @media (max-width: 820px) {
+      .two,
+      .three {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        padding-top: 28px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Pi Subagent Architecture</h1>
+    <p>A one-page technical map of how the extension discovers specialist agents, teaches the parent Pi agent about them, spawns isolated child Pi processes, handles sessions, and reports results.</p>
+  </header>
+
+  <nav aria-label="Architecture sections">
+    <a href="#diagram">Diagram</a>
+    <a href="#flow">Execution Flow</a>
+    <a href="#modules">Modules</a>
+    <a href="#sessions">Sessions</a>
+    <a href="#background">Background Jobs</a>
+    <a href="#limits">Limits</a>
+    <a href="#risks">Risks</a>
+  </nav>
+
+  <main>
+    <section id="diagram">
+      <h2>Architecture Diagram</h2>
+      <div class="flow" role="img" aria-label="Pi Subagent architecture diagram">
+        <svg viewBox="0 0 1120 720" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+              <path d="M0,0 L10,4 L0,8 Z" fill="#687588"></path>
+            </marker>
+          </defs>
+
+          <rect class="module module-blue" x="40" y="40" width="220" height="86"></rect>
+          <text class="svg-title" x="58" y="70">Parent Pi session</text>
+          <text class="svg-text" x="58" y="94">User asks for work</text>
+          <text class="svg-text" x="58" y="112">Parent agent may delegate</text>
+
+          <rect class="module module-blue" x="320" y="40" width="240" height="86"></rect>
+          <text class="svg-title" x="338" y="70">index.ts</text>
+          <text class="svg-text" x="338" y="94">Lifecycle hooks</text>
+          <text class="svg-text" x="338" y="112">Tool registration and guards</text>
+
+          <rect class="module module-green" x="620" y="40" width="220" height="86"></rect>
+          <text class="svg-title" x="638" y="70">agents.ts</text>
+          <text class="svg-text" x="638" y="94">User and project agents</text>
+          <text class="svg-text" x="638" y="112">Starter explore agent</text>
+
+          <rect class="module module-green" x="620" y="158" width="220" height="86"></rect>
+          <text class="svg-title" x="638" y="188">contract.ts</text>
+          <text class="svg-text" x="638" y="212">Schema descriptions</text>
+          <text class="svg-text" x="638" y="230">Injected prompt rules</text>
+
+          <rect class="module" x="40" y="190" width="220" height="126"></rect>
+          <text class="svg-title" x="58" y="220">Tool surface</text>
+          <text class="svg-text" x="58" y="244">subagent</text>
+          <text class="svg-text" x="58" y="262">subagent_start</text>
+          <text class="svg-text" x="58" y="280">subagent_status</text>
+          <text class="svg-text" x="58" y="298">subagent_cancel/result</text>
+
+          <rect class="module module-amber" x="320" y="190" width="240" height="126"></rect>
+          <text class="svg-title" x="338" y="220">Validation and orchestration</text>
+          <text class="svg-text" x="338" y="244">Normalize calls</text>
+          <text class="svg-text" x="338" y="262">Depth and cycle guards</text>
+          <text class="svg-text" x="338" y="280">Session identity and locks</text>
+          <text class="svg-text" x="338" y="298">Bounded concurrency</text>
+
+          <rect class="module module-amber" x="620" y="306" width="220" height="126"></rect>
+          <text class="svg-title" x="638" y="336">runner.ts</text>
+          <text class="svg-text" x="638" y="360">Build child CLI args</text>
+          <text class="svg-text" x="638" y="378">Write temp prompt/context</text>
+          <text class="svg-text" x="638" y="396">Spawn pi --mode json</text>
+          <text class="svg-text" x="638" y="414">Handle abort and exit</text>
+
+          <rect class="module" x="900" y="306" width="180" height="126"></rect>
+          <text class="svg-title" x="918" y="336">Child Pi process</text>
+          <text class="svg-text" x="918" y="360">Isolated runtime</text>
+          <text class="svg-text" x="918" y="378">Agent prompt appended</text>
+          <text class="svg-text" x="918" y="396">Model/tools selected</text>
+          <text class="svg-text" x="918" y="414">JSON event stream</text>
+
+          <rect class="module" x="620" y="482" width="220" height="104"></rect>
+          <text class="svg-title" x="638" y="512">runner-events.js</text>
+          <text class="svg-text" x="638" y="536">Parse message_end</text>
+          <text class="svg-text" x="638" y="554">Parse turn_end / agent_end</text>
+          <text class="svg-text" x="638" y="572">Deduplicate assistant messages</text>
+
+          <rect class="module" x="320" y="482" width="240" height="104"></rect>
+          <text class="svg-title" x="338" y="512">types.ts</text>
+          <text class="svg-text" x="338" y="536">SingleResult and BackgroundJob</text>
+          <text class="svg-text" x="338" y="554">Usage aggregation</text>
+          <text class="svg-text" x="338" y="572">Success/error normalization</text>
+
+          <rect class="module module-green" x="40" y="482" width="220" height="104"></rect>
+          <text class="svg-title" x="58" y="512">render.ts</text>
+          <text class="svg-text" x="58" y="536">Collapsed and expanded TUI</text>
+          <text class="svg-text" x="58" y="554">Background status/results</text>
+          <text class="svg-text" x="58" y="572">Completion excerpts</text>
+
+          <rect class="module module-red" x="900" y="482" width="180" height="104"></rect>
+          <text class="svg-title" x="918" y="512">Filesystem state</text>
+          <text class="svg-text" x="918" y="536">Pi session files</text>
+          <text class="svg-text" x="918" y="554">.pi-subagent-locks</text>
+          <text class="svg-text" x="918" y="572">Temp prompt/context files</text>
+
+          <path class="arrow" d="M260 83 H320"></path>
+          <path class="arrow" d="M560 83 H620"></path>
+          <path class="arrow" d="M730 126 V158"></path>
+          <path class="arrow" d="M620 201 H560"></path>
+          <path class="arrow" d="M150 126 V190"></path>
+          <path class="arrow" d="M260 253 H320"></path>
+          <path class="arrow" d="M560 253 C590 253 590 369 620 369"></path>
+          <path class="arrow" d="M840 369 H900"></path>
+          <path class="arrow" d="M900 432 C870 460 850 482 810 502"></path>
+          <path class="arrow" d="M620 534 H560"></path>
+          <path class="arrow" d="M320 534 H260"></path>
+          <path class="arrow" d="M150 482 V316"></path>
+          <path class="arrow dash" d="M990 432 V482"></path>
+          <path class="arrow dash" d="M900 534 H840"></path>
+        </svg>
+      </div>
+    </section>
+
+    <section id="flow">
+      <h2>Execution Flow</h2>
+      <div class="grid two">
+        <div class="card">
+          <span class="pill">Foreground</span>
+          <h3><code>subagent</code></h3>
+          <p>Runs one or more specialist calls and waits for all results. Calls are validated, session identities are derived, locks are acquired, child processes are spawned, JSON events are streamed, and a concise parent-facing summary is returned.</p>
+          <ul>
+            <li>Up to 8 calls per invocation.</li>
+            <li>Up to 4 child processes at once.</li>
+            <li>Supports named persistent sessions.</li>
+            <li>Supports <code>initialContext: "parent"</code> when a parent snapshot is available.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="pill">Background</span>
+          <h3><code>subagent_start</code></h3>
+          <p>Creates an in-memory job, starts child processes asynchronously, and returns a job ID. Completion can inject a message and optionally trigger a parent turn.</p>
+          <ul>
+            <li>Root parent session only.</li>
+            <li>No persistent sessions.</li>
+            <li>No parent-context snapshots yet.</li>
+            <li>Use <code>subagent_status</code>, <code>subagent_cancel</code>, and <code>subagent_result</code> after start.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="modules">
+      <h2>Module Responsibilities</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Module</th>
+            <th>Responsibility</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>index.ts</code></td><td>Extension lifecycle, tool registration, validation, guards, session orchestration, background job execution.</td></tr>
+          <tr><td><code>agents.ts</code></td><td>Agent Markdown discovery, frontmatter parsing, project/user precedence, starter agent creation.</td></tr>
+          <tr><td><code>contract.ts</code></td><td>Parent-facing tool descriptions, field semantics, usage examples, injected subagent prompt.</td></tr>
+          <tr><td><code>runner.ts</code></td><td>Child Pi argument construction, temp files, process lifecycle, streaming updates, abort behavior.</td></tr>
+          <tr><td><code>runner-cli.js</code></td><td>Parent CLI flag parsing and safe forwarding to child Pi invocations.</td></tr>
+          <tr><td><code>runner-events.js</code></td><td>Pi JSON event parsing, assistant message deduplication, final text and error summary helpers.</td></tr>
+          <tr><td><code>types.ts</code></td><td>Shared call, session, result, usage, and background job types plus result normalization.</td></tr>
+          <tr><td><code>session-lock.ts</code></td><td>Filesystem lock directories, lock owner metadata, heartbeats, stale diagnostics, release safety.</td></tr>
+          <tr><td><code>background-jobs.ts</code></td><td>In-memory background job registry, active counts, lookup, registration, ID generation.</td></tr>
+          <tr><td><code>render.ts</code></td><td>TUI rendering and text formatting for foreground and background tool results.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="sessions">
+      <h2>Sessions and Context</h2>
+      <div class="grid three">
+        <div class="card compact">
+          <h3>Empty context</h3>
+          <p>The default. The child starts with <code>--no-session</code> unless a named session is supplied.</p>
+        </div>
+        <div class="card compact">
+          <h3>Parent context</h3>
+          <p>The parent session header and branch are serialized as JSONL and passed to the child. The snapshot cwd is rewritten to the child cwd.</p>
+        </div>
+        <div class="card compact">
+          <h3>Named session</h3>
+          <p>A deterministic child session ID is derived from parent session ID, cwd, agent name, and logical handle.</p>
+        </div>
+      </div>
+      <div class="callout">
+        Named sessions require a persisted parent Pi session. The same handle can intentionally map to different sessions when the agent or cwd changes.
+      </div>
+    </section>
+
+    <section id="background">
+      <h2>Background Job Lifecycle</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>States</h3>
+          <p>Jobs move through <code>running</code>, <code>cancelling</code>, <code>cancelled</code>, <code>completed</code>, or <code>failed</code>. Each call also tracks a finer phase such as <code>queued</code>, <code>spawning</code>, <code>running</code>, <code>completed</code>, <code>failed</code>, or <code>cancelled</code>.</p>
+        </div>
+        <div class="card">
+          <h3>Result delivery</h3>
+          <p><code>onComplete</code> defaults to <code>trigger</code>, which injects a completion message and starts a parent turn. <code>message</code> injects only. <code>silent</code> records results in memory only.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="limits">
+      <h2>Operational Limits</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Area</th>
+            <th>Limit</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Foreground calls</td><td>8 calls per invocation, 4 running concurrently.</td></tr>
+          <tr><td>Background jobs</td><td>2 active jobs, 2 calls running concurrently per job.</td></tr>
+          <tr><td>Delegation depth</td><td>Default max depth is 3. Cycle prevention is enabled by default.</td></tr>
+          <tr><td>Session locks</td><td>Heartbeat every 30 seconds. Stale after 2 minutes.</td></tr>
+          <tr><td>Ephemeral semantic completion</td><td>After <code>agent_end</code> and output, wait 250 ms, then terminate the child if needed.</td></tr>
+          <tr><td>Persistent session flush</td><td>Wait up to 30 seconds after completion before forcing termination.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="risks">
+      <h2>Risk Areas</h2>
+      <div class="grid two">
+        <div class="callout risk">
+          <h3>Non-durable background jobs</h3>
+          <p>Jobs are stored in memory. Restarting the parent extension process loses job status and results.</p>
+        </div>
+        <div class="callout risk">
+          <h3>Shared working tree</h3>
+          <p>Background children can edit the same files as the parent or each other. The extension warns but does not serialize file writes.</p>
+        </div>
+        <div class="callout risk">
+          <h3>Advisory session locks</h3>
+          <p>Locks are filesystem directories with heartbeat metadata. Stale recovery is manual.</p>
+        </div>
+        <div class="callout risk">
+          <h3>Pi JSON event coupling</h3>
+          <p>Success semantics depend on recognized event types: <code>message_end</code>, <code>turn_end</code>, and <code>agent_end</code>.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <p>Generated from the current repository architecture. See <code>ARCHITECTURE.md</code> and <code>docs/architecture/</code> for the markdown review set.</p>
+    </footer>
+  </main>
+</body>
+</html>
