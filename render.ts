@@ -14,6 +14,7 @@ import {
 	type SingleResult,
 	type SubagentDetails,
 	type UsageStats,
+	type WorktreeMode,
 	aggregateUsage,
 	getDisplayItems,
 	getFinalOutput,
@@ -398,8 +399,11 @@ export function formatBackgroundCompletion(job: BackgroundJob): string {
 		statusLabel = "completed successfully";
 	}
 
+	const worktreeLabel = formatWorktreeLabel(job);
+	const worktreeSuffix = worktreeLabel ? ` ${worktreeLabel}` : "";
+
 	const lines: string[] = [
-		`${verb} \`${job.id}\` ${statusLabel}${durationLine}.`,
+		`${verb} \`${job.id}\` ${statusLabel}${durationLine}${worktreeSuffix}.`,
 		"",
 	];
 
@@ -477,6 +481,17 @@ function formatCallStatusLine(
 /**
  * Format the status of a single background job.
  */
+function formatWorktreeLabel(job: BackgroundJob): string {
+	if (job.worktreeMode === "isolated") return "[isolated worktree]";
+	if (job.worktreeMode === "shared") return "[shared worktree]";
+	return "";
+}
+
+function formatWorktreeScopeLine(job: BackgroundJob): string {
+	if (!job.worktreeScope) return "";
+	return `\n  Scope: ${job.worktreeScope}`;
+}
+
 export function formatJobStatus(job: BackgroundJob): string {
 	const age = job.createdAt ? formatAge(job.createdAt) : "";
 	const duration = job.results ? formatElapsed(job.createdAt, job.updatedAt) : "";
@@ -487,6 +502,11 @@ export function formatJobStatus(job: BackgroundJob): string {
 		return formatCallStatusLine(call, cs, r);
 	});
 
+	const worktreeLabel = formatWorktreeLabel(job);
+	const worktreeSuffix = worktreeLabel ? ` ${worktreeLabel}` : "";
+
+	const scopeLine = formatWorktreeScopeLine(job);
+
 	const when = job.status === "running" || job.status === "cancelling"
 		? `started ${age} ago`
 		: job.status === "interrupted"
@@ -494,7 +514,7 @@ export function formatJobStatus(job: BackgroundJob): string {
 			: `took ${duration} (finished ${age} ago)`;
 
 	return [
-		`${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}`,
+		`${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}${worktreeSuffix}${scopeLine}`,
 		...callLines,
 	].join("\n");
 }
@@ -510,6 +530,9 @@ export function formatJobList(jobs: BackgroundJob[]): string {
 		const age = job.createdAt ? formatAge(job.createdAt) : "";
 		const duration = job.results ? formatElapsed(job.createdAt, job.updatedAt) : "";
 
+		const worktreeLabel = formatWorktreeLabel(job);
+		const worktreeSuffix = worktreeLabel ? ` ${worktreeLabel}` : "";
+
 		let when: string;
 		if (job.status === "running" || job.status === "cancelling") {
 			when = `started ${age} ago`;
@@ -518,7 +541,7 @@ export function formatJobList(jobs: BackgroundJob[]): string {
 		} else {
 			when = `took ${duration} (finished ${age} ago)`;
 		}
-		lines.push(`  ${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}`);
+		lines.push(`  ${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}${worktreeSuffix}`);
 	}
 
 	lines.push("");

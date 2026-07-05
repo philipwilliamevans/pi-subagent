@@ -23,6 +23,8 @@ import type {
   SingleResult,
   BackgroundCompletionMode,
   CallState,
+  WorktreeMode,
+  WorktreeMetadata,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -50,6 +52,9 @@ interface PersistedJobState {
   callStates: CallState[];
   results?: SingleResult[];
   error?: string;
+  worktreeMode?: WorktreeMode;
+  worktreeScope?: string;
+  worktreeMetadata?: WorktreeMetadata;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +117,9 @@ function hydrateJob(state: PersistedJobState): BackgroundJob {
     callStates: state.callStates ?? [],
     results: state.results,
     error: state.error,
+    worktreeMode: state.worktreeMode,
+    worktreeScope: state.worktreeScope,
+    worktreeMetadata: state.worktreeMetadata,
     // Unserializable — set to safe defaults
     promise: Promise.resolve(),
     abortController: undefined,
@@ -135,6 +143,9 @@ function serializeJob(job: BackgroundJob): PersistedJobState {
     callStates: job.callStates,
     results: job.results,
     error: job.error,
+    worktreeMode: job.worktreeMode,
+    worktreeScope: job.worktreeScope,
+    worktreeMetadata: job.worktreeMetadata,
   };
 }
 

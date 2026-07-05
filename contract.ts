@@ -174,6 +174,13 @@ when you need the complete response text.
 Background jobs do not support persistent sessions (\`session\`).
 Omit \`session\` for background delegation.
 
+**Important:** Background jobs run in the same working tree by default
+and can edit files concurrently with the parent or sibling jobs. Always:
+- Give each subagent a clearly disjoint scope of work.
+- Use \`subagent_status\` to check running jobs before making changes.
+- Use \`subagent_result\` to review full output before integrating.
+- Note the job ID at start time for later queries.
+
 ### Runtime delegation guards
 
 - Max depth: current depth ${guards.currentDepth}, max depth ${guards.maxDepth}
@@ -220,11 +227,27 @@ export function formatSubagentStartToolDescription(): string {
     '  - `"message"` — inject a completion message without triggering a turn.',
     '  - `"silent"` — record in memory only; no message injected.',
     "",
+    "Optional top-level field `worktreeMode` (default: \"shared\"):",
+    '  - `"shared"` — run in the parent\'s working tree (default).',
+    '  - `"isolated"` — run in a separate git worktree with its own branch.',
+    "    Requires a clean git working tree. The job's changes are isolated",
+    "    and do not automatically merge back.",
+    "",
+    "Optional top-level field `worktreeScope`:",
+    '  - A string describing the file/path scope of the job, e.g. "src/*.ts" or "docs/".',
+    "    Helps identify potential conflicts between concurrent background jobs.",
+    "",
     "Restrictions:",
     "- Only available from the root parent Pi session (not from subagents).",
     "- Persistent sessions (`session`) are not supported in background mode.",
     `- Maximum ${2} concurrent background jobs.`,
     "- `initialContext: \"parent\"` is not yet supported.",
+    "",
+    "Shared-worktree safety:",
+    "  - Use \`subagent_status\` to check running jobs before making parent edits.",
+    "  - Use \`subagent_result\` to review full output before integrating changes.",
+    "  - The job ID is shown at start — note it for later queries.",
+    "  - When isolated mode is available, set `worktreeMode: \"isolated\"` to run each job in a separate git worktree.",
     "",
     "Example (onComplete defaults to trigger, so you can omit it):",
     '  { "calls": [{ "agent": "explorer", "prompt": "Find all test files" }] }',
