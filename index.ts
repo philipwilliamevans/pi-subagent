@@ -65,6 +65,8 @@ import {
   getDisplayItems,
   isResultError,
   isResultSuccess,
+  validateCallIndex,
+  validateMaxOutputLength,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -1250,44 +1252,21 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         }
 
         const callIndex = params.callIndex;
-        if (callIndex !== undefined) {
-          if (!Number.isSafeInteger(callIndex) || callIndex < 0) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Invalid callIndex ${callIndex}. Must be a non-negative integer.`,
-                },
-              ],
-              isError: true,
-            };
-          }
-          if (callIndex >= job.results.length) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Invalid callIndex ${callIndex}. Job has ${job.results.length} call${job.results.length === 1 ? "" : "s"} (0–${job.results.length - 1}).`,
-                },
-              ],
-              isError: true,
-            };
-          }
+        const callIndexError = validateCallIndex(callIndex, job.results.length - 1);
+        if (callIndexError) {
+          return {
+            content: [{ type: "text", text: callIndexError }],
+            isError: true,
+          };
         }
 
         const maxOutputLength = params.maxOutputLength;
-        if (maxOutputLength !== undefined) {
-          if (!Number.isSafeInteger(maxOutputLength) || maxOutputLength < 1 || maxOutputLength > 50000) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Invalid maxOutputLength ${maxOutputLength}. Must be an integer from 1 to 50000.`,
-                },
-              ],
-              isError: true,
-            };
-          }
+        const maxOutputLengthError = validateMaxOutputLength(maxOutputLength);
+        if (maxOutputLengthError) {
+          return {
+            content: [{ type: "text", text: maxOutputLengthError }],
+            isError: true,
+          };
         }
 
         const text = formatJobResults(job, {
