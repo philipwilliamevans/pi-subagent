@@ -27,6 +27,7 @@ The main path is:
 - [Background jobs and cancellation](docs/architecture/05-background-jobs.md)
 - [Events, result normalization, and rendering](docs/architecture/06-events-and-rendering.md)
 - [Operational limits and risk areas](docs/architecture/07-operational-limits.md)
+- [Future enhancements and current limitations](docs/architecture/08-future-enhancements-and-current-limitations.md)
 
 ## Architectural responsibilities
 
@@ -89,7 +90,7 @@ User request
 - Background jobs are root-session-only, accept no persistent sessions, do not support `initialContext: "parent"` yet, and are limited to 2 active jobs with 2 calls running concurrently per job.
 - Delegation defaults to max depth 3 and cycle prevention enabled.
 - Named sessions require a persisted parent Pi session and are blocked from temporary parent-seeded subagent sessions.
-- Background jobs share the same working tree as the parent and can edit files concurrently.
+- Background jobs can run in the parent working tree or in a job-level isolated worktree. A multi-call isolated job currently shares one isolated worktree across its calls.
 - Session locks are filesystem directories with heartbeat metadata, not OS-level advisory locks.
 
 ## Where to start for changes
@@ -99,4 +100,3 @@ User request
 - To change named session behavior, review [`index.ts`](index.ts), [`session-lock.ts`](session-lock.ts), and [`session-paths.ts`](session-paths.ts) together.
 - To change background execution, review [`index.ts`](index.ts), [`background-jobs.ts`](background-jobs.ts), [`types.ts`](types.ts), and the background rendering helpers in [`render.ts`](render.ts).
 - To change user-visible TUI output, change [`render.ts`](render.ts) and keep result shape compatibility with [`types.ts`](types.ts).
-

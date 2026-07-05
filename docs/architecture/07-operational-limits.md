@@ -31,13 +31,13 @@ Depth is propagated to children through environment variables. Cycle prevention 
 
 ## Known architectural tradeoffs
 
-### Background jobs are not durable
+### Background jobs are durable, but active jobs are not resumed
 
-The job registry is in memory. This is simple and works for live parent sessions, but jobs and results are lost if the extension process exits.
+Terminal background jobs are persisted to disk and reloaded on startup. Jobs that were `running` or `cancelling` when the extension process exited are reloaded as `interrupted`; child processes are not resumed.
 
-### Background jobs share the working tree
+### Isolated worktree mode is job-level
 
-Background child processes run in the same filesystem workspace. The extension warns callers but does not serialize file edits or enforce scope separation.
+`worktreeMode: "isolated"` creates one isolated worktree for the background job. Multiple calls inside that job share the same isolated worktree, so sibling write-capable calls can still conflict with each other.
 
 ### Session locks are advisory
 
@@ -64,4 +64,3 @@ Before changing architecture-sensitive code:
 3. Confirm persistent session changes handle duplicate calls, active calls, filesystem locks, and custom session directories.
 4. Confirm background job changes handle status, cancellation, completion delivery, and `subagent_result`.
 5. Keep generated package contents in sync with `package.json.files` if new runtime files are needed in the npm package.
-
