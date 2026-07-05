@@ -31,6 +31,9 @@ pi -e .
 
 - `index.ts` — extension entry point and tool registration
 - `agents.ts` — agent discovery/parsing
+- `background-jobs.ts` — in-memory background job registry with optional disk persistence
+- `background-job-store.ts` — durable persistence for background job state
+- `background-lifecycle.ts` — cancellation and terminal-state transitions
 - `contract.ts` — parent-facing tool contract text and prompt rendering
 - `runner.ts` — subagent process execution
 - `render.ts` — TUI rendering for tool calls/results

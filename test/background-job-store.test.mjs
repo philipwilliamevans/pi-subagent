@@ -1,0 +1,451 @@
+/**
+ * Tests for background-job-store.ts — durable persistence of background jobs.
+ *
+ * Each test uses an isolated temporary directory so that persisted state
+ * from one test does not leak into another.
+ */
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+// ---------------------------------------------------------------------------
+// Module loading
+// ---------------------------------------------------------------------------
+
+let storeModule;
+let typesModule;
+
+test.before(async () => {
+  const base = process.cwd();
+  storeModule = await import(
+    pathToFileURL(path.join(base, "background-job-store.ts")).href
+  );
+  typesModule = await import(
+    pathToFileURL(path.join(base, "types.ts")).href
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function createTempBase() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-store-test-"));
+}
+
+function makeMinimalJob(id, status = "completed", overrides = {}) {
+  return {
+    id,
+    createdAt: Date.now() - 60000,
+    updatedAt: Date.now(),
+    status,
+    onComplete: "trigger",
+    calls: [
+      {
+        index: 0,
+        agent: "test-agent",
+        prompt: "Test prompt",
+        effectiveCwd: "/tmp",
+        initialContext: "empty",
+      },
+    ],
+    callStates: [{ phase: "completed", toolCalls: 0, recentActivity: [] }],
+    results: [
+      {
+        callIndex: 0,
+        agent: "test-agent",
+        agentSource: "user",
+        prompt: "Test prompt",
+        initialContext: "empty",
+        exitCode: 0,
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Done." }],
+            timestamp: 1000,
+          },
+        ],
+        stderr: "",
+        usage: {
+          input: 1,
+          output: 1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          contextTokens: 0,
+          turns: 1,
+        },
+      },
+    ],
+    promise: Promise.resolve(),
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ensureJobsDir
+// ---------------------------------------------------------------------------
+
+test("ensureJobsDir creates the .pi-subagent/jobs directory tree", () => {
+  const baseDir = createTempBase();
+  try {
+    const dir = storeModule.ensureJobsDir(baseDir);
+    assert.ok(fs.existsSync(dir));
+    assert.match(dir, /\.pi-subagent\/jobs$/);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("ensureJobsDir is idempotent", () => {
+  const baseDir = createTempBase();
+  try {
+    const dir1 = storeModule.ensureJobsDir(baseDir);
+    const dir2 = storeModule.ensureJobsDir(baseDir);
+    assert.equal(dir1, dir2);
+    assert.ok(fs.existsSync(dir2));
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// persistJobState
+// ---------------------------------------------------------------------------
+
+test("persistJobState writes state.json atomically", () => {
+  const baseDir = createTempBase();
+  try {
+    const job = makeMinimalJob("subjob_atomic_001");
+    storeModule.persistJobState(baseDir, job);
+
+    const statePath = path.join(
+      baseDir,
+      ".pi-subagent",
+      "jobs",
+      "subjob_atomic_001",
+      "state.json",
+    );
+    assert.ok(fs.existsSync(statePath));
+
+    const raw = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+    assert.equal(raw.schemaVersion, 1);
+    assert.equal(raw.jobId, "subjob_atomic_001");
+    assert.equal(raw.status, "completed");
+    assert.equal(raw.calls.length, 1);
+    assert.equal(raw.results.length, 1);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("persistJobState updates existing state", () => {
+  const baseDir = createTempBase();
+  try {
+    const job = makeMinimalJob("subjob_update_001");
+    storeModule.persistJobState(baseDir, job);
+
+    // Update the job
+    job.status = "failed";
+    job.error = "Something went wrong";
+    storeModule.persistJobState(baseDir, job);
+
+    const statePath = path.join(
+      baseDir,
+      ".pi-subagent",
+      "jobs",
+      "subjob_update_001",
+      "state.json",
+    );
+    const raw = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+    assert.equal(raw.status, "failed");
+    assert.equal(raw.error, "Something went wrong");
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// loadPersistedJob
+// ---------------------------------------------------------------------------
+
+test("loadPersistedJob returns a hydrated BackgroundJob", () => {
+  const baseDir = createTempBase();
+  try {
+    const job = makeMinimalJob("subjob_load_001");
+    storeModule.persistJobState(baseDir, job);
+
+    const loaded = storeModule.loadPersistedJob(baseDir, "subjob_load_001");
+    assert.ok(loaded);
+    assert.equal(loaded.id, "subjob_load_001");
+    assert.equal(loaded.status, "completed");
+    assert.equal(loaded.calls.length, 1);
+    assert.equal(loaded.results.length, 1);
+    assert.equal(loaded.results[0].exitCode, 0);
+    // Unserializable fields should have safe defaults
+    assert.ok(typeof loaded.promise?.then === "function");
+    assert.equal(loaded.abortController, undefined);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("loadPersistedJob returns undefined for missing job", () => {
+  const baseDir = createTempBase();
+  try {
+    assert.equal(
+      storeModule.loadPersistedJob(baseDir, "subjob_nonexistent"),
+      undefined,
+    );
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("loadPersistedJob returns undefined for corrupted state.json", () => {
+  const baseDir = createTempBase();
+  try {
+    const jobDir = path.join(baseDir, ".pi-subagent", "jobs", "subjob_corrupt");
+    fs.mkdirSync(jobDir, { recursive: true });
+    fs.writeFileSync(path.join(jobDir, "state.json"), "not valid json", "utf-8");
+
+    assert.equal(
+      storeModule.loadPersistedJob(baseDir, "subjob_corrupt"),
+      undefined,
+    );
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// loadPersistedJobs — terminal states
+// ---------------------------------------------------------------------------
+
+test("loadPersistedJobs loads completed jobs from disk", () => {
+  const baseDir = createTempBase();
+  try {
+    storeModule.persistJobState(
+      baseDir,
+      makeMinimalJob("subjob_completed_001"),
+    );
+    storeModule.persistJobState(
+      baseDir,
+      makeMinimalJob("subjob_failed_002", "failed"),
+    );
+    storeModule.persistJobState(
+      baseDir,
+      makeMinimalJob("subjob_cancelled_003", "cancelled"),
+    );
+
+    const jobs = storeModule.loadPersistedJobs(baseDir);
+    assert.equal(jobs.length, 3);
+
+    const ids = jobs.map((j) => j.id).sort();
+    assert.deepEqual(ids, [
+      "subjob_cancelled_003",
+      "subjob_completed_001",
+      "subjob_failed_002",
+    ]);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Interrupted jobs (active on restart)
+// ---------------------------------------------------------------------------
+
+test("loadPersistedJobs upgrades running jobs to interrupted", () => {
+  const baseDir = createTempBase();
+  try {
+    const running = makeMinimalJob("subjob_running_001", "running", {
+      results: undefined,
+      callStates: [{ phase: "running", toolCalls: 2, recentActivity: [] }],
+    });
+    storeModule.persistJobState(baseDir, running);
+
+    const jobs = storeModule.loadPersistedJobs(baseDir);
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0].id, "subjob_running_001");
+    assert.equal(jobs[0].status, "interrupted");
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("loadPersistedJobs upgrades cancelling jobs to interrupted", () => {
+  const baseDir = createTempBase();
+  try {
+    const cancelling = makeMinimalJob("subjob_cancelling_001", "cancelling", {
+      results: undefined,
+      callStates: [{ phase: "running", toolCalls: 1, recentActivity: [] }],
+    });
+    storeModule.persistJobState(baseDir, cancelling);
+
+    const jobs = storeModule.loadPersistedJobs(baseDir);
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0].id, "subjob_cancelling_001");
+    assert.equal(jobs[0].status, "interrupted");
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// loadPersistedJobs — empty / missing directory
+// ---------------------------------------------------------------------------
+
+test("loadPersistedJobs returns empty array when no jobs directory exists", () => {
+  const baseDir = createTempBase();
+  try {
+    const jobs = storeModule.loadPersistedJobs(baseDir);
+    assert.deepEqual(jobs, []);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("loadPersistedJobs returns empty array when jobs directory is empty", () => {
+  const baseDir = createTempBase();
+  try {
+    storeModule.ensureJobsDir(baseDir);
+    const jobs = storeModule.loadPersistedJobs(baseDir);
+    assert.deepEqual(jobs, []);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// persistJobResult
+// ---------------------------------------------------------------------------
+
+test("persistJobResult writes result.md", () => {
+  const baseDir = createTempBase();
+  try {
+    storeModule.persistJobState(
+      baseDir,
+      makeMinimalJob("subjob_result_001"),
+    );
+    storeModule.persistJobResult(
+      baseDir,
+      "subjob_result_001",
+      "## explorer — completed\n\nFull analysis.",
+    );
+
+    const resultPath = path.join(
+      baseDir,
+      ".pi-subagent",
+      "jobs",
+      "subjob_result_001",
+      "result.md",
+    );
+    assert.ok(fs.existsSync(resultPath));
+    const content = fs.readFileSync(resultPath, "utf-8");
+    assert.match(content, /Full analysis/);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// removePersistedJob
+// ---------------------------------------------------------------------------
+
+test("removePersistedJob deletes the job directory", () => {
+  const baseDir = createTempBase();
+  try {
+    storeModule.persistJobState(
+      baseDir,
+      makeMinimalJob("subjob_remove_001"),
+    );
+
+    const jobDir = path.join(baseDir, ".pi-subagent", "jobs", "subjob_remove_001");
+    assert.ok(fs.existsSync(jobDir));
+
+    storeModule.removePersistedJob(baseDir, "subjob_remove_001");
+    assert.ok(!fs.existsSync(jobDir));
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("removePersistedJob does not throw for nonexistent job", () => {
+  const baseDir = createTempBase();
+  try {
+    // Should not throw
+    storeModule.removePersistedJob(baseDir, "subjob_ghost");
+    assert.ok(true);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// listPersistedJobIds
+// ---------------------------------------------------------------------------
+
+test("listPersistedJobIds returns job IDs sorted by creation order", () => {
+  const baseDir = createTempBase();
+  try {
+    storeModule.persistJobState(
+      baseDir,
+      makeMinimalJob("subjob_list_001"),
+    );
+    storeModule.persistJobState(
+      baseDir,
+      makeMinimalJob("subjob_list_002"),
+    );
+
+    const ids = storeModule.listPersistedJobIds(baseDir).sort();
+    assert.deepEqual(ids, ["subjob_list_001", "subjob_list_002"]);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("listPersistedJobIds returns empty when no jobs directory", () => {
+  const baseDir = createTempBase();
+  try {
+    assert.deepEqual(storeModule.listPersistedJobIds(baseDir), []);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// No unserializable fields leak into persisted state
+// ---------------------------------------------------------------------------
+
+test("persisted state.json excludes promise, abortController, intermediateResults", () => {
+  const baseDir = createTempBase();
+  try {
+    const job = makeMinimalJob("subjob_no_leak_001");
+    // These are set on the live object but should not be serialized
+    job.promise = "should not appear";
+    job.abortController = "should not appear";
+    job.intermediateResults = "should not appear";
+
+    storeModule.persistJobState(baseDir, job);
+
+    const statePath = path.join(
+      baseDir,
+      ".pi-subagent",
+      "jobs",
+      "subjob_no_leak_001",
+      "state.json",
+    );
+    const raw = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+    assert.equal(raw.promise, undefined);
+    assert.equal(raw.abortController, undefined);
+    assert.equal(raw.intermediateResults, undefined);
+    assert.equal(raw.jobId, "subjob_no_leak_001");
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});

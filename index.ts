@@ -19,6 +19,11 @@ import {
   registerBackgroundJob,
   getBackgroundJob,
   getAllBackgroundJobs,
+  setJobStoreBaseDir,
+  reloadPersistedJobs,
+  updateBackgroundJobStatus,
+  setBackgroundJobResults,
+  persistJobResultArtifact,
 } from "./background-jobs.js";
 import {
   CALLS_SCHEMA_DESCRIPTION,
@@ -722,8 +727,19 @@ export default function (pi: ExtensionAPI) {
 
   let discoveredAgents: AgentConfig[] = [];
 
-  // Auto-discover agents on session start.
+  // Initialize background job persistence and auto-discover agents on session start.
   pi.on("session_start", async (_event, ctx) => {
+    // Set up the persistent job store under the project's .pi-subagent directory.
+    setJobStoreBaseDir(ctx.cwd);
+    const reloadedCount = reloadPersistedJobs();
+    if (reloadedCount > 0) {
+      const label = reloadedCount === 1 ? "job" : "jobs";
+      const message = `Reloaded ${reloadedCount} persisted background ${label}. Use \`subagent_status\` to inspect.`;
+      if (ctx.hasUI) {
+        ctx.ui.notify(message, "info");
+      }
+    }
+
     if (!canDelegate) return;
 
     const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
@@ -1239,6 +1255,18 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           };
         }
 
+        if (job.status === "interrupted") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Job \`${job.id}\` was interrupted (the parent process exited before it completed). No results are available.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
         if (!job.results || job.results.length === 0) {
           return {
             content: [
@@ -1520,15 +1548,25 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         const hasError = results.some((r) => isResultError(r));
         job.status = hasError ? "failed" : "completed";
       }
-
       job.results = results;
       job.updatedAt = Date.now();
+
+      // Persist state and result artifact.
+      updateBackgroundJobStatus(job.id, job.status as any);
+      setBackgroundJobResults(job.id, results);
+      if (job.status !== "cancelling") {
+        const resultText = formatJobResults(job as any, {});
+        persistJobResultArtifact(job.id, resultText);
+      }
+
       postCompletionMessage(job);
     } catch (error) {
       job.intermediateResults = undefined;
       job.status = "failed";
-      job.error = error instanceof Error ? error.message : String(error);
       job.updatedAt = Date.now();
+      job.error = error instanceof Error ? error.message : String(error);
+      updateBackgroundJobStatus(job.id, "failed");
+      setBackgroundJobResults(job.id, []);
       postCompletionMessage(job);
     }
   }
