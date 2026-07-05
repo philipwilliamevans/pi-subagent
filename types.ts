@@ -58,6 +58,8 @@ export interface CallState {
   completedAt?: number;
   toolCalls: number;
   recentActivity: string[];
+  /** Cursor into the tool-call items array, used to avoid replaying the same activity on partial updates. */
+  activityCursor?: number;
 }
 
 /** Worktree execution mode for background jobs. */
