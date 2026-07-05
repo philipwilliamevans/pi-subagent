@@ -1168,3 +1168,237 @@ test("formatJobResults valid maxOutputLength still truncates", async () => {
     cleanup();
   }
 });
+
+// ===================================================================
+// Interrupted status rendering
+// ===================================================================
+
+test("formatBackgroundCompletion shows interrupted state", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatBackgroundCompletion } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_interrupted",
+      createdAt: Date.now() - 30000,
+      updatedAt: Date.now(),
+      status: "interrupted",
+      onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find tests", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [],
+    };
+
+    const text = formatBackgroundCompletion(job);
+    assert.match(text, /subjob_interrupted/);
+    assert.match(text, /interrupted/);
+    assert.match(text, /parent process exited/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobList shows interrupted jobs in summary", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobList } = await import(moduleUrl);
+
+    const jobs = [
+      { id: "subjob_run", createdAt: Date.now() - 10000, updatedAt: Date.now() - 10000, status: "running", calls: [{ index: 0, agent: "a", prompt: "", effectiveCwd: "/tmp", initialContext: "empty" }], promise: Promise.resolve(), onComplete: "trigger" },
+      { id: "subjob_int", createdAt: Date.now() - 60000, updatedAt: Date.now() - 30000, status: "interrupted", calls: [{ index: 0, agent: "b", prompt: "", effectiveCwd: "/tmp", initialContext: "empty" }], promise: Promise.resolve(), onComplete: "message" },
+    ];
+
+    const text = formatJobList(jobs);
+    assert.match(text, /subjob_int.*interrupted/);
+    assert.match(text, /interrupted/);
+    assert.match(text, /1 running.*1 interrupted/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobStatus shows interrupted job", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_statint",
+      createdAt: Date.now() - 60000,
+      updatedAt: Date.now() - 30000,
+      status: "interrupted",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [],
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /subjob_statint/);
+    assert.match(text, /interrupted/);
+  } finally {
+    cleanup();
+  }
+});
+
+// ===================================================================
+// Background jobs registry persistence integration
+// ===================================================================
+
+test("setJobStoreBaseDir creates the jobs directory", async () => {
+  const mod = await import("../background-jobs.ts");
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-bg-integration-"));
+  try {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(baseDir);
+
+    const jobsDir = path.join(baseDir, ".pi-subagent", "jobs");
+    assert.ok(fs.existsSync(jobsDir));
+  } finally {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(null);
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("setJobStoreBaseDir(null) disables persistence", async () => {
+  const mod = await import("../background-jobs.ts");
+  mod.clearBackgroundJobs();
+  mod.setJobStoreBaseDir(null);
+  assert.equal(mod.getJobStoreBaseDir(), null);
+});
+
+test("registerBackgroundJob persists when store is configured", async () => {
+  const mod = await import("../background-jobs.ts");
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-bg-persist-"));
+  try {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(baseDir);
+
+    const id = mod.generateJobId();
+    const job = { id, createdAt: Date.now(), updatedAt: Date.now(), status: "running", calls: [], callStates: [], promise: Promise.resolve(), onComplete: "trigger" };
+
+    mod.registerBackgroundJob(job);
+
+    const statePath = path.join(baseDir, ".pi-subagent", "jobs", id, "state.json");
+    assert.ok(fs.existsSync(statePath));
+
+    const raw = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+    assert.equal(raw.jobId, id);
+    assert.equal(raw.status, "running");
+  } finally {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(null);
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("updateBackgroundJobStatus persists status change", async () => {
+  const mod = await import("../background-jobs.ts");
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-bg-status-"));
+  try {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(baseDir);
+
+    const id = mod.generateJobId();
+    const job = { id, createdAt: Date.now(), updatedAt: Date.now(), status: "running", calls: [], callStates: [], promise: Promise.resolve(), onComplete: "trigger" };
+    mod.registerBackgroundJob(job);
+
+    mod.updateBackgroundJobStatus(id, "completed");
+
+    const statePath = path.join(baseDir, ".pi-subagent", "jobs", id, "state.json");
+    const raw = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+    assert.equal(raw.status, "completed");
+
+    const retrieved = mod.getBackgroundJob(id);
+    assert.equal(retrieved.status, "completed");
+  } finally {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(null);
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("setBackgroundJobResults persists results", async () => {
+  const mod = await import("../background-jobs.ts");
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-bg-results-"));
+  try {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(baseDir);
+
+    const id = mod.generateJobId();
+    const job = { id, createdAt: Date.now(), updatedAt: Date.now(), status: "running", calls: [], callStates: [], promise: Promise.resolve(), onComplete: "trigger" };
+    mod.registerBackgroundJob(job);
+
+    const results = [{
+      callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Test", initialContext: "empty",
+      exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], timestamp: 1 }],
+      stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+    }];
+
+    mod.setBackgroundJobResults(id, results);
+
+    const statePath = path.join(baseDir, ".pi-subagent", "jobs", id, "state.json");
+    const raw = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+    assert.equal(raw.results.length, 1);
+    assert.equal(raw.results[0].exitCode, 0);
+  } finally {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(null);
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("reloadPersistedJobs loads terminal and interrupted jobs", async () => {
+  const mod = await import("../background-jobs.ts");
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-bg-reload-"));
+  try {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(baseDir);
+
+    // Persist some jobs directly via the store
+    const storeMod = await import("../background-job-store.ts");
+    const completed = makeMinimalJobFromStore("reload_completed", "completed");
+    const failed = makeMinimalJobFromStore("reload_failed", "failed");
+    const running = makeMinimalJobFromStore("reload_running", "running", undefined);
+
+    storeMod.persistJobState(baseDir, completed);
+    storeMod.persistJobState(baseDir, failed);
+    storeMod.persistJobState(baseDir, running);
+
+    mod.clearBackgroundJobs();
+    const count = mod.reloadPersistedJobs();
+
+    // Should have loaded 3 jobs
+    assert.equal(count, 3);
+    assert.equal(mod.getTotalJobCount(), 3);
+
+    // Running job should be interrupted
+    const interrupted = mod.getBackgroundJob("reload_running");
+    assert.equal(interrupted.status, "interrupted");
+
+    // Completed/failed should keep their status
+    assert.equal(mod.getBackgroundJob("reload_completed").status, "completed");
+    assert.equal(mod.getBackgroundJob("reload_failed").status, "failed");
+  } finally {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(null);
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+function makeMinimalJobFromStore(id, status, results) {
+  return {
+    id,
+    createdAt: Date.now() - 60000,
+    updatedAt: Date.now(),
+    status,
+    onComplete: "trigger",
+    calls: [{ index: 0, agent: "test-agent", prompt: "Test", effectiveCwd: "/tmp", initialContext: "empty" }],
+    callStates: [{ phase: status === "running" ? "running" : "completed", toolCalls: 0, recentActivity: [] }],
+    results: results !== undefined ? results : [{
+      callIndex: 0, agent: "test-agent", agentSource: "user", prompt: "Test", initialContext: "empty",
+      exitCode: status === "failed" ? 1 : 0,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], timestamp: 1 }],
+      stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+    }],
+    promise: Promise.resolve(),
+  };
+}

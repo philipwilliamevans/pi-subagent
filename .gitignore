@@ -1,1 +1,4 @@
 /.tickets/
+
+# Background subagent job persistence
+.pi-subagent/jobs/

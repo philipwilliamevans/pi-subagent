@@ -38,7 +38,8 @@ The main path is:
 | Child process runtime | [`runner.ts`](runner.ts) | Temp prompt/session files, CLI argument construction, process spawning, streaming updates, abort handling |
 | Event parsing | [`runner-events.js`](runner-events.js) | Pi JSON event parsing, assistant message deduplication, final text/error summaries |
 | Shared state model | [`types.ts`](types.ts) | Normalized calls, result shape, usage aggregation, success/error semantics |
-| Background registry | [`background-jobs.ts`](background-jobs.ts) | In-memory job registration, lookup, status counts, ID generation |
+| Background registry | [`background-jobs.ts`](background-jobs.ts) | In-memory job registration, lookup, status counts, ID generation, optional disk persistence |
+| Background job store | [`background-job-store.ts`](background-job-store.ts) | Durable persistence for background job state (atomic writes, load/save/delete) |
 | Session locking | [`session-lock.ts`](session-lock.ts) | Filesystem locks for named persistent subagent sessions |
 | Session paths | [`session-paths.ts`](session-paths.ts) | Default Pi session directory derivation and creation |
 | TUI rendering | [`render.ts`](render.ts) | Collapsed and expanded displays for foreground and background tools |
@@ -62,9 +63,11 @@ The tool schema descriptions, tool help text, and injected parent prompt all flo
 
 Named subagent session IDs are derived from parent session ID, effective cwd, agent name, and logical session handle. The same logical handle used with different agents or cwd values intentionally resolves to different Pi sessions.
 
-### Background jobs are lightweight
+### Background jobs are durable
 
-Background jobs are in-memory records in the extension process. They support progress status, cancellation, completion message injection, and later result retrieval, but they are not durable across parent process restarts.
+Background jobs are persisted to `.pi-subagent/jobs/<jobId>/` via [`background-job-store.ts`](background-job-store.ts). Terminal jobs (completed, failed, cancelled, interrupted) survive parent process restarts and can still be inspected via `subagent_status` and `subagent_result`. Jobs that were running or cancelling when the process exited are reloaded with status `interrupted`.
+
+Persistence uses atomic writes (write to temp file, then rename) and excludes unserializable fields (promise, abortController, live callbacks).
 
 ## High-level data flow
 

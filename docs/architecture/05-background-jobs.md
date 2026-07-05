@@ -13,7 +13,11 @@ Properties:
 - Active jobs are those with status `running` or `cancelling`.
 - The active job limit is 2.
 
-The registry is not durable. Jobs disappear when the extension process exits.
+## Durable persistence
+
+When a base directory is configured (via `setJobStoreBaseDir(cwd)`), every state transition is persisted to `.pi-subagent/jobs/<jobId>/state.json` using atomic writes via [`background-job-store.ts`](../../background-job-store.ts). On startup, `reloadPersistedJobs()` loads all terminal jobs from disk into the in-memory registry.
+
+Jobs that were `running` or `cancelling` when the process exited are reloaded with status `interrupted`. Unserializable fields (promise, abortController, live callbacks) are excluded from the persisted state.
 
 ## Job model
 
@@ -60,6 +64,8 @@ When execution finishes:
 - If the job was cancelling, final status becomes `cancelled`.
 - Else if any call failed, final status becomes `failed`.
 - Else final status becomes `completed`.
+
+On each status change the persisted state.json is updated. For terminal jobs a result.md artifact is also written to disk containing the formatted output available via `subagent_result`.
 
 ## Completion delivery
 

@@ -387,6 +387,9 @@ export function formatBackgroundCompletion(job: BackgroundJob): string {
 	if (job.status === "cancelled") {
 		verb = "Background subagent job";
 		statusLabel = "was cancelled";
+	} else if (job.status === "interrupted") {
+		verb = "Background subagent job";
+		statusLabel = "was interrupted (the parent process exited before it completed)";
 	} else if (job.status === "failed") {
 		verb = "Background subagent job";
 		statusLabel = "completed with errors";
@@ -486,7 +489,9 @@ export function formatJobStatus(job: BackgroundJob): string {
 
 	const when = job.status === "running" || job.status === "cancelling"
 		? `started ${age} ago`
-		: `took ${duration} (finished ${age} ago)`;
+		: job.status === "interrupted"
+			? `interrupted ${age} ago (took ${duration})`
+			: `took ${duration} (finished ${age} ago)`;
 
 	return [
 		`${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}`,
@@ -508,6 +513,8 @@ export function formatJobList(jobs: BackgroundJob[]): string {
 		let when: string;
 		if (job.status === "running" || job.status === "cancelling") {
 			when = `started ${age} ago`;
+		} else if (job.status === "interrupted") {
+			when = `interrupted ${age} ago (took ${duration})`;
 		} else {
 			when = `took ${duration} (finished ${age} ago)`;
 		}
@@ -520,11 +527,13 @@ export function formatJobList(jobs: BackgroundJob[]): string {
 	const completed = jobs.filter((j) => j.status === "completed").length;
 	const failed = jobs.filter((j) => j.status === "failed").length;
 	const cancelled = jobs.filter((j) => j.status === "cancelled").length;
+	const interrupted = jobs.filter((j) => j.status === "interrupted").length;
 	const parts: string[] = [];
 	if (running > 0) parts.push(`${running} running`);
 	if (completed > 0) parts.push(`${completed} completed`);
 	if (failed > 0) parts.push(`${failed} failed`);
 	if (cancelled > 0) parts.push(`${cancelled} cancelled`);
+	if (interrupted > 0) parts.push(`${interrupted} interrupted`);
 	lines.push(parts.join(", "));
 
 	return lines.join("\n");

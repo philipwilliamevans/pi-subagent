@@ -39,7 +39,8 @@ export type BackgroundJobStatus =
   | "cancelling"
   | "cancelled"
   | "completed"
-  | "failed";
+  | "failed"
+  | "interrupted";
 
 /** Lifecycle phase of a single background subagent call. */
 export type CallLifecyclePhase =
