@@ -6,6 +6,7 @@
  * subagent invocations.
  */
 
+import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -65,6 +66,7 @@ import {
   type SingleResult,
   type SubagentDetails,
   type SubagentSessionDetails,
+  type WorktreeMode,
   DEFAULT_INITIAL_CONTEXT,
   emptyUsage,
   getDisplayItems,
@@ -141,6 +143,22 @@ const SubagentStartParams = Type.Object({
         default: "trigger",
       },
     ),
+  ),
+  worktreeMode: Type.Optional(
+    Type.Union(
+      [Type.Literal("shared"), Type.Literal("isolated")],
+      {
+        description:
+          'Worktree execution mode: "shared" (default) runs in the parent working tree; "isolated" creates a separate git worktree with its own branch for safe parallel edits.',
+        default: "shared",
+      },
+    ),
+  ),
+  worktreeScope: Type.Optional(
+    Type.String({
+      description:
+        'Optional file/path scope declaration for this job, e.g. "src/*.ts" or "docs/". Helps identify potential conflicts between concurrent jobs.',
+    }),
   ),
 });
 
@@ -1060,6 +1078,27 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         const onComplete: BackgroundCompletionMode =
           params.onComplete === undefined ? "trigger" : params.onComplete;
 
+        // --- Resolve worktreeMode ---
+        const worktreeMode: WorktreeMode =
+          params.worktreeMode === undefined ? "shared" : params.worktreeMode;
+
+        // --- Git checks for isolated mode ---
+        if (worktreeMode === "isolated") {
+          const gitError = checkGitPreconditions(ctx.cwd);
+          if (gitError) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Cannot start background job with worktreeMode="isolated": ${gitError}\n\nUse worktreeMode="shared" (default) to run in the parent working tree, or resolve the git issue and retry.`,
+                },
+              ],
+              details: makeDetails([]),
+              isError: true,
+            };
+          }
+        }
+
         // --- Create background job ---
         const jobId = generateJobId();
         const createdAt = Date.now();
@@ -1081,6 +1120,8 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           promise: Promise.resolve(),
           onComplete,
           abortController,
+          worktreeMode,
+          worktreeScope: params.worktreeScope,
         };
 
         // Populate promise with async execution.
@@ -1098,11 +1139,20 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           .map((c) => `  - ${c.agent}: ${c.prompt.slice(0, 60)}${c.prompt.length > 60 ? "..." : ""}`)
           .join("\n");
 
+        const scopeLine = params.worktreeScope
+          ? `\n**Declared scope:** ${params.worktreeScope}`
+          : "";
+
+        const worktreeNote =
+          worktreeMode === "isolated"
+            ? `**Isolated worktree mode:** This job will run in a separate git worktree with its own branch. Its changes do not affect the parent working tree.${scopeLine}`
+            : `**Shared-worktree mode:** This job shares the parent working tree. Use \`subagent_status\` to check running jobs before making parent edits, and \`subagent_result\` to review full output before integrating changes. Give each subagent a clearly disjoint scope.${scopeLine}`;
+
         return {
           content: [
             {
               type: "text",
-              text: `Started background subagent job \`${jobId}\` with ${calls.length} call${calls.length === 1 ? "" : "s"}.\n\n${callList}\n\nThe result will be posted to this session when complete.\n\n**Warning:** Background subagents run in the same working tree and may edit files concurrently. Give each subagent a clearly disjoint scope.`,
+              text: `Started background subagent job \`${jobId}\` with ${calls.length} call${calls.length === 1 ? "" : "s"}.\n\n${callList}\n\nThe result will be posted to this session when complete.\n\n${worktreeNote}`,
             },
           ],
           details: makeDetails([]),
@@ -1411,6 +1461,61 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
   // -----------------------------------------------------------------------
 
   const MAX_BACKGROUND_CONCURRENCY = 2;
+
+  /**
+   * Check git preconditions for isolated worktree mode.
+   * Returns an error message if preconditions are not met, or null if OK.
+   *
+   * Validates:
+   *  - The cwd is inside a git repository.
+   *  - The working tree is clean (no uncommitted changes).
+   *  - The current branch can be determined.
+   */
+  function checkGitPreconditions(cwd: string): string | null {
+    try {
+      // Check if we're in a git repository
+      const isRepo = execSync("git rev-parse --git-dir", {
+        cwd,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000,
+      });
+      if (!isRepo.trim()) {
+        return "Not inside a git repository.";
+      }
+
+      // Check working tree cleanliness
+      const status = execSync("git status --porcelain", {
+        cwd,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000,
+      });
+      if (status.trim().length > 0) {
+        const modifiedCount = status.trim().split("\n").length;
+        return `Working tree has ${modifiedCount} uncommitted change${modifiedCount === 1 ? "" : "s"}. Use a clean working tree for isolated worktree mode, or use worktreeMode="shared" (default).`;
+      }
+
+      // Get current branch name
+      const branch = execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000,
+      });
+      if (!branch.trim() || branch.trim() === "HEAD") {
+        return "Not on a named branch (detached HEAD). Switch to a branch for isolated worktree mode.";
+      }
+
+      return null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("not a git repository") || message.includes("Not a git repository")) {
+        return "Not inside a git repository.";
+      }
+      return `Git check failed: ${message}`;
+    }
+  }
 
   /**
    * Inject a completion message into the parent session.

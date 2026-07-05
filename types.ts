@@ -60,8 +60,19 @@ export interface CallState {
   recentActivity: string[];
 }
 
+/** Worktree execution mode for background jobs. */
+export type WorktreeMode = "shared" | "isolated";
+
 /** How to deliver completion of a background job. */
 export type BackgroundCompletionMode = "silent" | "message" | "trigger";
+
+/** Metadata about an isolated worktree for a background job. */
+export interface WorktreeMetadata {
+	path: string;
+	branch: string;
+	baseCommit: string;
+	changedFiles?: string[];
+}
 
 /** In-memory background job tracking entry. */
 export interface BackgroundJob {
@@ -80,6 +91,12 @@ export interface BackgroundJob {
 	callStates: CallState[];
 	/** Streaming partial results, updated as calls progress. */
 	intermediateResults?: SingleResult[];
+	/** Worktree execution mode (defaults to "shared" when unset). */
+	worktreeMode?: WorktreeMode;
+	/** Declared file/path scope for this job, if provided by the caller. */
+	worktreeScope?: string;
+	/** Populated when running in isolated worktree mode. */
+	worktreeMetadata?: WorktreeMetadata;
 }
 
 /** Aggregated token usage from a subagent run. */

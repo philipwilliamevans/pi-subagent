@@ -1239,6 +1239,152 @@ test("formatJobStatus shows interrupted job", async () => {
 });
 
 // ===================================================================
+// Worktree safety tests
+// ===================================================================
+
+test("formatJobStatus shows shared worktree mode", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_shared",
+      createdAt: Date.now() - 30000,
+      updatedAt: Date.now() - 30000,
+      status: "running",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find tests", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [],
+      worktreeMode: "shared",
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /subjob_shared/);
+    assert.match(text, /\[shared worktree\]/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobStatus shows isolated worktree mode", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_isolated",
+      createdAt: Date.now() - 30000,
+      updatedAt: Date.now() - 30000,
+      status: "running",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find tests", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [],
+      worktreeMode: "isolated",
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /subjob_isolated/);
+    assert.match(text, /\[isolated worktree\]/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobStatus omits worktree label for legacy jobs without mode", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_legacy",
+      createdAt: Date.now() - 30000,
+      updatedAt: Date.now() - 30000,
+      status: "running",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find tests", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [],
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /subjob_legacy/);
+    assert.doesNotMatch(text, /\[.*worktree\]/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobList shows worktree mode in listing", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobList } = await import(moduleUrl);
+
+    const jobs = [
+      { id: "subjob_a", createdAt: Date.now() - 10000, updatedAt: Date.now() - 10000, status: "running", calls: [{ index: 0, agent: "a", prompt: "", effectiveCwd: "/tmp", initialContext: "empty" }], promise: Promise.resolve(), onComplete: "trigger", worktreeMode: "isolated" },
+      { id: "subjob_b", createdAt: Date.now() - 60000, updatedAt: Date.now() - 10000, status: "completed", calls: [], promise: Promise.resolve(), onComplete: "message", worktreeMode: "shared" },
+    ];
+
+    const text = formatJobList(jobs);
+    assert.match(text, /subjob_a.*\[isolated worktree\]/);
+    assert.match(text, /subjob_b.*\[shared worktree\]/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatBackgroundCompletion shows worktree mode", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatBackgroundCompletion } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_done_wt",
+      createdAt: Date.now() - 8000,
+      updatedAt: Date.now(),
+      status: "completed",
+      onComplete: "trigger",
+      worktreeMode: "isolated",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Find", initialContext: "empty",
+        exitCode: 0,
+        messages: [{ role: "assistant", content: [{ type: "text", text: "Found." }], timestamp: 1000 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatBackgroundCompletion(job);
+    assert.match(text, /subjob_done_wt/);
+    assert.match(text, /\[isolated worktree\]/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("BackgroundJob type accepts worktreeMode field", async () => {
+  const { getAllBackgroundJobs, clearBackgroundJobs, generateJobId, registerBackgroundJob, getBackgroundJob, removeBackgroundJob } = await import("../background-jobs.ts");
+  clearBackgroundJobs();
+
+  const id = generateJobId();
+  const job = {
+    id,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    status: "running",
+    calls: [{ index: 0, agent: "isolated-agent", prompt: "Do work", effectiveCwd: "/tmp", initialContext: "empty" }],
+    callStates: [{ phase: "queued", toolCalls: 0, recentActivity: [] }],
+    promise: Promise.resolve(),
+    onComplete: "trigger",
+    worktreeMode: "isolated",
+    worktreeMetadata: { path: "/tmp/worktrees/subjob_abc", branch: "subjob/subjob_abc-isolated-agent", baseCommit: "abc123" },
+  };
+
+  registerBackgroundJob(job);
+  const retrieved = getBackgroundJob(id);
+  assert.ok(retrieved);
+  assert.equal(retrieved.worktreeMode, "isolated");
+  assert.equal(retrieved.worktreeMetadata?.branch, "subjob/subjob_abc-isolated-agent");
+  assert.equal(retrieved.worktreeMetadata?.baseCommit, "abc123");
+  removeBackgroundJob(id);
+});
+
+// ===================================================================
 // Background jobs registry persistence integration
 // ===================================================================
 
