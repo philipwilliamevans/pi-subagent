@@ -40,6 +40,19 @@ export function getWorktreePath(cwd: string, jobId: string): string {
   return path.join(getWorktreeBaseDir(repoRoot), jobId);
 }
 
+export function mapRepoPathToWorktree(
+  repoRoot: string,
+  worktreePath: string,
+  targetPath: string,
+): string | null {
+  const resolvedRepoRoot = path.resolve(repoRoot);
+  const resolvedTarget = path.resolve(targetPath);
+  const relative = path.relative(resolvedRepoRoot, resolvedTarget);
+  if (relative === "") return path.resolve(worktreePath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  return path.resolve(worktreePath, relative);
+}
+
 export function createWorktree(cwd: string, jobId: string): WorktreeMetadata {
   const repoRoot = getRepoRoot(cwd);
   const baseCommit = getHeadCommit(repoRoot);

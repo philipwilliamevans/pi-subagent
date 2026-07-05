@@ -55,7 +55,7 @@ In shared mode, child processes run in the parent working tree and can race with
 
 `runBackgroundSubagentJob` executes calls with concurrency 2 through the same `runAgent` path used by foreground calls.
 
-For `worktreeMode: "isolated"`, execution first creates a git worktree under a sibling `.pi-worktrees/<project-slug>/<jobId>` directory using a branch named `codex/subjob_<jobId>`. Calls run in that worktree. After completion, the extension records changed files and writes `.pi-subagent/jobs/<jobId>/worktree.patch` when there are changes.
+For `worktreeMode: "isolated"`, execution first creates a git worktree under a sibling `.pi-worktrees/<project-slug>/<jobId>` directory using a branch named `codex/subjob_<jobId>`. Calls run at their corresponding repo-relative cwd inside that worktree. After completion, the extension records changed files and writes `.pi-subagent/jobs/<jobId>/worktree.patch` when there are changes.
 
 Streaming partial updates are captured into per-call lifecycle state:
 - tool call counts

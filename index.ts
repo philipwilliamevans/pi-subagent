@@ -7,10 +7,10 @@
  */
 
 import { execSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionCommandContext, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, STARTER_AGENT_NAME, discoverAgentsWithStarter } from "./agents.js";
 import { getMisplacedBackgroundWorktreeFieldError } from "./background-params.js";
@@ -75,6 +75,7 @@ import {
   createWorktreePatch,
   getRepoRoot,
   getWorktreeChangedFiles,
+  mapRepoPathToWorktree,
 } from "./worktree.js";
 import {
   type BackgroundCompletionMode,
@@ -88,6 +89,7 @@ import {
   type WorktreeMode,
   DEFAULT_INITIAL_CONTEXT,
   emptyUsage,
+  getFinalOutput,
   isResultError,
   isResultSuccess,
   validateCallIndex,
@@ -112,6 +114,7 @@ const SUBAGENT_TEMP_PARENT_SESSION_ENV = "PI_SUBAGENT_TEMP_PARENT_SESSION";
 const SESSION_ID_NAMESPACE = "pi-subagent/v1";
 const SESSION_ID_PREFIX = "subagent.";
 const SESSION_HANDLE_MAX_LENGTH = 120;
+const DEMO_AGENT_NAMES = ["explorer", STARTER_AGENT_NAME];
 
 // ---------------------------------------------------------------------------
 // Tool parameter schema
@@ -284,6 +287,18 @@ interface ExtensionExecutionContext {
     getSessionDir: () => string;
     getSessionFile: () => string | undefined;
   };
+}
+
+interface DemoState {
+  id: string;
+  cwd: string;
+  filePath: string;
+  agent: string;
+  sessionHandle: string;
+  session: SubagentSessionDetails;
+  phase: "running" | "needs_input" | "completed" | "failed";
+  lastOutput?: string;
+  updatedAt: number;
 }
 
 function parseInitialContext(raw: unknown): InitialContext | null {
@@ -753,6 +768,46 @@ function makePlaceholderResult(call: NormalizedCall): SingleResult {
   };
 }
 
+function commandArgsToString(args: unknown): string {
+  if (Array.isArray(args)) return args.map((arg) => String(arg)).join(" ").trim();
+  if (typeof args === "string") return args.trim();
+  if (args === undefined || args === null) return "";
+  return String(args).trim();
+}
+
+function buildDemoExplorePrompt(filePath: string): string {
+  return `Explore this file: ${filePath}
+
+Goal: identify three promising follow-up topics the user could choose for deeper exploration.
+
+Instructions:
+- Read only; do not edit files.
+- Inspect the file enough to make the options specific and useful.
+- Return exactly three numbered options.
+- End by asking the user to choose one option.
+- End your final line with exactly: AWAITING_CHOICE`;
+}
+
+function buildDemoContinuePrompt(previousOutput: string, choice: string): string {
+  return `Continue the exploration demo.
+
+Your previous response was:
+${previousOutput}
+
+The user chose or directed:
+${choice}
+
+Now explore that choice further. Use the existing session context where possible, inspect any necessary nearby files, and finish with a concise evidence-backed summary. Do not end with AWAITING_CHOICE.`;
+}
+
+function selectDemoAgent(agents: AgentConfig[]): AgentConfig | undefined {
+  for (const name of DEMO_AGENT_NAMES) {
+    const found = agents.find((agent) => agent.name === name);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 function formatResultLabel(result: SingleResult, fallbackIndex: number): string {
   const displayIndex = (result.callIndex ?? fallbackIndex) + 1;
   const sessionText = result.session ? ` session=${oneLine(result.session.handle)}` : "";
@@ -787,8 +842,24 @@ export default function (pi: ExtensionAPI) {
   const { currentDepth, maxDepth, canDelegate, ancestorAgentStack, preventCycles } =
     depthConfig;
   const activeSessionIds = new Set<string>();
+  const demoStates = new Map<string, DemoState>();
 
   let discoveredAgents: AgentConfig[] = [];
+
+  function demoStateKey(ctx: ExtensionExecutionContext): string {
+    return `${ctx.sessionManager.getSessionId()}\0${path.resolve(ctx.cwd)}`;
+  }
+
+  function postDemoMessage(text: string): void {
+    pi.sendMessage(
+      {
+        customType: "subagent-demo",
+        display: true,
+        content: [{ type: "text", text }],
+      },
+      { deliverAs: "followUp", triggerTurn: false },
+    );
+  }
 
   // Initialize background job persistence and auto-discover agents on session start.
   pi.on("session_start", async (_event, ctx) => {
@@ -851,6 +922,204 @@ export default function (pi: ExtensionAPI) {
 
   // Register the subagent tool.
   if (canDelegate) {
+    pi.registerCommand("subagent-demo", {
+      description:
+        "Demo persisted child-session continuation: explore a file, wait for a choice, then continue the same subagent session.",
+      handler: async (args: unknown, commandCtx: ExtensionCommandContext) => {
+        const ctx = commandCtx as unknown as ExtensionExecutionContext;
+        const key = demoStateKey(ctx);
+        const input = commandArgsToString(args);
+        const existing = demoStates.get(key);
+
+        if (currentDepth > 0) {
+          postDemoMessage("`/subagent-demo` can only be run from the root parent Pi session.");
+          return;
+        }
+
+        const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+        const discovery = starterDiscovery.discovery;
+        const agents = discovery.agents;
+        const makeDetails = makeDetailsFactory(discovery.projectAgentsDir);
+        const persistentSessionDir = getPersistentSessionDir(ctx);
+        const demoAgent = selectDemoAgent(agents);
+
+        if (!demoAgent) {
+          postDemoMessage(
+            `Cannot run \`/subagent-demo\`: no demo exploration agent found.\n\n` +
+            `Expected one of: ${DEMO_AGENT_NAMES.map((name) => `\`${name}\``).join(", ")}.`,
+          );
+          return;
+        }
+
+        const runDemoCall = async (
+          state: DemoState,
+          prompt: string,
+          created: boolean,
+        ): Promise<SingleResult> => {
+          const call: NormalizedCall = {
+            index: 0,
+            agent: state.agent,
+            prompt,
+            effectiveCwd: state.cwd,
+            initialContext: "empty",
+            sessionHandle: state.sessionHandle,
+            session: {
+              ...state.session,
+              created,
+              initialContextApplied: created ? "empty" : null,
+            },
+          };
+
+          const lockResult = acquireSessionLocks(
+            getSessionLockTargets([call], persistentSessionDir),
+          );
+          if (lockResult.error) {
+            throw new Error(lockResult.error);
+          }
+
+          activeSessionIds.add(call.session!.id);
+          try {
+            return await runAgent({
+              cwd: ctx.cwd,
+              agents,
+              callIndex: call.index,
+              agentName: call.agent,
+              prompt: call.prompt,
+              callModel: call.model,
+              callCwd: call.effectiveCwd,
+              initialContext: call.initialContext,
+              parentSessionSnapshotJsonl: undefined,
+              session: call.session,
+              persistentSessionDir,
+              parentDepth: currentDepth,
+              parentAgentStack: ancestorAgentStack,
+              maxDepth,
+              preventCycles,
+              makeDetails,
+            });
+          } finally {
+            activeSessionIds.delete(call.session!.id);
+            releaseSessionLocks(lockResult.locks);
+          }
+        };
+
+        if (existing?.phase === "needs_input") {
+          if (!input) {
+            postDemoMessage(
+              `Subagent demo \`${existing.id}\` is waiting for your choice.\n\n` +
+              `${existing.lastOutput ?? "(no prior output captured)"}\n\n` +
+              `Run \`/subagent-demo <choice or direction>\` to continue the same child session.`,
+            );
+            return;
+          }
+
+          existing.phase = "running";
+          existing.updatedAt = Date.now();
+          postDemoMessage(`Continuing subagent demo \`${existing.id}\` in the same child session...`);
+
+          try {
+            const result = await runDemoCall(
+              existing,
+              buildDemoContinuePrompt(existing.lastOutput ?? "", input),
+              false,
+            );
+            const output = getFinalOutput(result.messages).trim() || getResultSummaryText(result);
+            existing.lastOutput = output;
+            existing.phase = isResultError(result) ? "failed" : "completed";
+            existing.updatedAt = Date.now();
+
+            postDemoMessage(
+              `Subagent demo \`${existing.id}\` ${existing.phase}.\n\n${output}`,
+            );
+          } catch (error) {
+            existing.phase = "failed";
+            existing.updatedAt = Date.now();
+            const message = error instanceof Error ? error.message : String(error);
+            postDemoMessage(`Subagent demo \`${existing.id}\` failed while continuing: ${message}`);
+          }
+          return;
+        }
+
+        const rawFilePath = input || "runner.ts";
+        const filePath = path.resolve(ctx.cwd, rawFilePath);
+        if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+          postDemoMessage(
+            `Cannot start subagent demo: file does not exist: ${filePath}\n\n` +
+            `Usage: \`/subagent-demo [file]\`, then \`/subagent-demo <choice>\` when it asks.`,
+          );
+          return;
+        }
+
+        const demoId = `demo_${randomUUID().slice(0, 8)}`;
+        const sessionHandle = `subagent-demo:${demoId}`;
+        const session: SubagentSessionDetails = {
+          handle: sessionHandle,
+          id: deriveSessionId(
+            ctx.sessionManager.getSessionId(),
+            path.resolve(ctx.cwd),
+            demoAgent.name,
+            sessionHandle,
+          ),
+          name: formatSessionDisplayName(demoAgent.name, sessionHandle),
+          cwd: path.resolve(ctx.cwd),
+          created: true,
+          initialContextApplied: "empty",
+        };
+
+        const state: DemoState = {
+          id: demoId,
+          cwd: path.resolve(ctx.cwd),
+          filePath,
+          agent: demoAgent.name,
+          sessionHandle,
+          session,
+          phase: "running",
+          updatedAt: Date.now(),
+        };
+        demoStates.set(key, state);
+
+        postDemoMessage(
+          `Starting subagent demo \`${demoId}\` with a persisted child session.\n\n` +
+          `Agent: ${demoAgent.name}\n` +
+          `File: ${filePath}\n` +
+          `The subagent will explore the file, offer three follow-up topics, and stop at \`AWAITING_CHOICE\`.`,
+        );
+
+        try {
+          const result = await runDemoCall(
+            state,
+            buildDemoExplorePrompt(filePath),
+            true,
+          );
+          const output = getFinalOutput(result.messages).trim() || getResultSummaryText(result);
+          state.lastOutput = output;
+          state.phase = !isResultError(result) && output.includes("AWAITING_CHOICE")
+            ? "needs_input"
+            : isResultError(result)
+              ? "failed"
+              : "completed";
+          state.updatedAt = Date.now();
+
+          if (state.phase === "needs_input") {
+            postDemoMessage(
+              `Subagent demo \`${demoId}\` needs input.\n\n` +
+              `${output}\n\n` +
+              `Continue with: \`/subagent-demo <your choice or direction>\``,
+            );
+          } else {
+            postDemoMessage(
+              `Subagent demo \`${demoId}\` ${state.phase} before reaching \`AWAITING_CHOICE\`.\n\n${output}`,
+            );
+          }
+        } catch (error) {
+          state.phase = "failed";
+          state.updatedAt = Date.now();
+          const message = error instanceof Error ? error.message : String(error);
+          postDemoMessage(`Subagent demo \`${demoId}\` failed: ${message}`);
+        }
+      },
+    });
+
     pi.registerTool({
       name: "subagent",
       label: "Subagent",
@@ -1150,6 +1419,21 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
               details: makeDetails([]),
               isError: true,
             };
+          }
+          const repoRoot = getRepoRoot(ctx.cwd);
+          for (const call of calls) {
+            if (!mapRepoPathToWorktree(repoRoot, repoRoot, call.effectiveCwd)) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: `Cannot start background job with worktreeMode="isolated": calls[${call.index}].cwd must be inside the git repository: ${call.effectiveCwd}`,
+                  },
+                ],
+                details: makeDetails([]),
+                isError: true,
+              };
+            }
           }
         }
 
@@ -1679,7 +1963,26 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
   ): Promise<void> {
     if (job.worktreeMode === "isolated") {
       try {
+        const repoRoot = getRepoRoot(defaultCwd);
         job.worktreeMetadata = createWorktree(defaultCwd, job.id);
+        for (const call of job.calls) {
+          const worktreeCallCwd = mapRepoPathToWorktree(
+            repoRoot,
+            job.worktreeMetadata.path,
+            call.effectiveCwd,
+          );
+          if (!worktreeCallCwd) {
+            throw new Error(
+              `calls[${call.index}].cwd must be inside the git repository for isolated worktree mode: ${call.effectiveCwd}`,
+            );
+          }
+          if (!fs.existsSync(worktreeCallCwd) || !fs.statSync(worktreeCallCwd).isDirectory()) {
+            throw new Error(
+              `calls[${call.index}].cwd does not exist in isolated worktree: ${worktreeCallCwd}`,
+            );
+          }
+          call.effectiveCwd = worktreeCallCwd;
+        }
         job.updatedAt = Date.now();
         persistBackgroundJob(job);
       } catch (error) {
@@ -1694,7 +1997,6 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
     }
 
     try {
-      const worktreeCwd = job.worktreeMetadata?.path;
       const results = await mapConcurrent(
         job.calls,
         MAX_BACKGROUND_CONCURRENCY,
@@ -1711,7 +2013,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
             agentName: call.agent,
             prompt: call.prompt,
             callModel: call.model,
-            callCwd: worktreeCwd ?? call.effectiveCwd,
+            callCwd: call.effectiveCwd,
             initialContext: call.initialContext,
             parentSessionSnapshotJsonl: undefined,
             session: undefined,

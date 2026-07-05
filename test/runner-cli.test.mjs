@@ -172,6 +172,31 @@ test("does not inherit parent session identity flags", () => {
   assert.deepEqual(parsed.alwaysProxy, ["--provider", "openrouter"]);
 });
 
+test("does not inherit parent cwd flag", () => {
+  const parsed = parseInheritedCliArgs([
+    "/usr/bin/node",
+    "pi",
+    "--cwd",
+    "/parent/repo",
+    "--provider",
+    "openrouter",
+  ]);
+
+  assert.deepEqual(parsed.alwaysProxy, ["--provider", "openrouter"]);
+});
+
+test("does not inherit parent inline cwd flag", () => {
+  const parsed = parseInheritedCliArgs([
+    "/usr/bin/node",
+    "pi",
+    "--cwd=/parent/repo",
+    "--provider",
+    "openrouter",
+  ]);
+
+  assert.deepEqual(parsed.alwaysProxy, ["--provider", "openrouter"]);
+});
+
 test("consumes dash-prefixed values for known value flags", () => {
   const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-cli-")));
   const previousCwd = process.cwd();

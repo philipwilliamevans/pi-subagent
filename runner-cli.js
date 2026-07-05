@@ -76,6 +76,7 @@ export function parseInheritedCliArgs(argv) {
     if (
       [
         "--mode",
+        "--cwd",
         "--session",
         "--session-id",
         "--fork",

@@ -75,7 +75,7 @@ Persistence uses atomic writes (write to temp file, then rename) and excludes un
 
 ### Isolated worktrees are optional and job-scoped
 
-Background jobs default to the parent working tree. With `worktreeMode: "isolated"`, the extension creates one git worktree for the whole job, runs every call in that worktree, records changed files, and writes a `worktree.patch` artifact when changes exist. Multi-call isolated jobs still share that one isolated worktree.
+Background jobs default to the parent working tree. With `worktreeMode: "isolated"`, the extension creates one git worktree for the whole job, runs every call at the corresponding repo-relative cwd inside that worktree, records changed files, and writes a `worktree.patch` artifact when changes exist. Multi-call isolated jobs still share that one isolated worktree.
 
 ## High-level data flow
 

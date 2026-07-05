@@ -28,14 +28,14 @@ The foreground call limit is 8.
 
 `executeCalls` maintains placeholder results for running calls and emits heartbeat updates every second while work is still active.
 
-Background calls use the same `runAgent` primitive. In shared mode they run in each call's effective cwd. In isolated mode every call in the job runs in the same job-level git worktree.
+Background calls use the same `runAgent` primitive. In shared mode they run in each call's effective cwd. In isolated mode every call in the job runs at the corresponding repo-relative cwd inside the same job-level git worktree.
 
 ## Child process creation
 
 `runAgent` builds and starts a child process equivalent to:
 
 ```text
-pi --mode json [inherited flags] -p [session flags] [model/tools/thinking flags] [system prompt file] <prompt>
+pi --mode json [inherited flags] --cwd <effective cwd> -p [session flags] [model/tools/thinking flags] [system prompt file] <prompt>
 ```
 
 The actual command is derived from the current process:

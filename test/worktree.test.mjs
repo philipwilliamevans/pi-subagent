@@ -75,6 +75,43 @@ test("worktree change detection and patch include untracked files", async () => 
   }
 });
 
+test("mapRepoPathToWorktree preserves repo-relative cwd", async () => {
+  const mod = await import("../worktree.ts");
+  const repo = path.join(os.tmpdir(), "pi-subagent-main-repo");
+  const worktree = path.join(os.tmpdir(), ".pi-worktrees", "pi-subagent-main-repo", "subjob_abc");
+
+  assert.equal(
+    mod.mapRepoPathToWorktree(repo, worktree, repo),
+    worktree,
+  );
+  assert.equal(
+    mod.mapRepoPathToWorktree(repo, worktree, path.join(repo, "docs", "architecture")),
+    path.join(worktree, "docs", "architecture"),
+  );
+});
+
+test("mapRepoPathToWorktree rejects cwd outside the repo", async () => {
+  const mod = await import("../worktree.ts");
+  const repo = path.join(os.tmpdir(), "pi-subagent-main-repo");
+  const worktree = path.join(os.tmpdir(), ".pi-worktrees", "pi-subagent-main-repo", "subjob_abc");
+
+  assert.equal(
+    mod.mapRepoPathToWorktree(repo, worktree, path.join(os.tmpdir(), "other-repo")),
+    null,
+  );
+});
+
+test("mapRepoPathToWorktree does not confuse sibling path prefixes", async () => {
+  const mod = await import("../worktree.ts");
+  const repo = path.join(os.tmpdir(), "pi-subagent");
+  const worktree = path.join(os.tmpdir(), ".pi-worktrees", "pi-subagent", "subjob_abc");
+
+  assert.equal(
+    mod.mapRepoPathToWorktree(repo, worktree, path.join(os.tmpdir(), "pi-subagent-other")),
+    null,
+  );
+});
+
 test("worktree project slugs distinguish repos with the same basename", async () => {
   const mod = await import("../worktree.ts");
   const parentA = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-worktree-a-"));
