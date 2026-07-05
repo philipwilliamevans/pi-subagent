@@ -961,3 +961,210 @@ test("formatJobStatus shows completed state with duration from callStates", asyn
     cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// FormatJobResults — defensive validation
+// ---------------------------------------------------------------------------
+
+test("formatJobResults handles fractional callIndex defensively", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_frac",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Find", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Results" }], timestamp: 1 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatJobResults(job, { callIndex: 1.5 });
+    assert.equal(text, "No results available for this job.");
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults handles negative callIndex defensively", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_neg",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Find", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Results" }], timestamp: 1 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatJobResults(job, { callIndex: -1 });
+    assert.equal(text, "No results available for this job.");
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults handles out-of-range callIndex defensively", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_oob",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Find", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Results" }], timestamp: 1 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatJobResults(job, { callIndex: 5 });
+    assert.equal(text, "No results available for this job.");
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults handles maxOutputLength of 0 defensively", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_zero",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Task", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Task", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Some output here." }], timestamp: 1 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatJobResults(job, { maxOutputLength: 0 });
+    // maxOutputLength of 0 is falsy, so no truncation is applied
+    assert.match(text, /Some output here/);
+    assert.doesNotMatch(text, /truncated/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults handles negative maxOutputLength defensively", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_negmax",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Task", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Task", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Some output here." }], timestamp: 1 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatJobResults(job, { maxOutputLength: -1 });
+    // Negative maxOutputLength is falsy via the && check, so no truncation
+    assert.match(text, /Some output here/);
+    assert.doesNotMatch(text, /truncated/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults handles fractional maxOutputLength defensively", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_fracmax",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Task", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Task", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Some output here." }], timestamp: 1 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatJobResults(job, { maxOutputLength: 2.5 });
+    // The defensive check floors to 2, so output is truncated at 2 characters.
+    assert.match(text, /truncated at 2 characters/);
+    assert.equal(text.includes("So"), true); // "Some output here." truncated to "So" (first 2 chars)
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults handles large maxOutputLength defensively", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_largemax",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Task", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Task", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Short output." }], timestamp: 1 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatJobResults(job, { maxOutputLength: 100000 });
+    // Output is shorter than limit, so no truncation even though limit > 50000
+    assert.match(text, /Short output/);
+    assert.doesNotMatch(text, /truncated/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults valid maxOutputLength still truncates", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const longOutput = "C".repeat(500);
+    const job = {
+      id: "subjob_validcap",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Long task", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Long task", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: longOutput }], timestamp: 1 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatJobResults(job, { maxOutputLength: 100 });
+    assert.match(text, /truncated at 100 characters/);
+    assert.equal(text.includes("C".repeat(100)), true);
+    assert.equal(text.includes("C".repeat(101)), false);
+  } finally {
+    cleanup();
+  }
+});

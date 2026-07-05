@@ -231,3 +231,37 @@ export function getDisplayItems(messages: Message[]): DisplayItem[] {
 	}
 	return items;
 }
+
+// ---------------------------------------------------------------------------
+// Subagent_result parameter validation
+// ---------------------------------------------------------------------------
+
+/** Maximum allowed value for maxOutputLength in subagent_result. */
+export const MAX_OUTPUT_LENGTH_LIMIT = 50000;
+
+/**
+ * Validate callIndex for subagent_result.
+ * Returns an error message string if invalid, or null if valid/absent.
+ */
+export function validateCallIndex(value: unknown, maxIndex: number): string | null {
+	if (value === undefined) return null;
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+		return `Invalid callIndex ${String(value)}. Must be a non-negative integer.`;
+	}
+	if (value > maxIndex) {
+		return `Invalid callIndex ${value}. Job has ${maxIndex + 1} call${maxIndex === 0 ? "" : "s"} (0–${maxIndex}).`;
+	}
+	return null;
+}
+
+/**
+ * Validate maxOutputLength for subagent_result.
+ * Returns an error message string if invalid, or null if absent.
+ */
+export function validateMaxOutputLength(value: unknown): string | null {
+	if (value === undefined) return null;
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > MAX_OUTPUT_LENGTH_LIMIT) {
+		return `Invalid maxOutputLength ${String(value)}. Must be an integer from 1 to ${MAX_OUTPUT_LENGTH_LIMIT}.`;
+	}
+	return null;
+}

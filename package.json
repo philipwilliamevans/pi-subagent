@@ -8,6 +8,7 @@
     "index.ts",
     "agents.ts",
     "background-jobs.ts",
+    "background-lifecycle.ts",
     "contract.ts",
     "runner.ts",
     "runner-cli.js",

@@ -65,6 +65,8 @@ import {
   getDisplayItems,
   isResultError,
   isResultSuccess,
+  validateCallIndex,
+  validateMaxOutputLength,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -150,9 +152,10 @@ const SubagentResultParams = Type.Object({
     description: "ID of the completed background job to retrieve results for.",
   }),
   callIndex: Type.Optional(
-    Type.Number({
+    Type.Integer({
       description:
         "0-based index of a specific call to retrieve. Omit to get all calls.",
+      minimum: 0,
     }),
   ),
   includeToolCalls: Type.Optional(
@@ -163,9 +166,11 @@ const SubagentResultParams = Type.Object({
     }),
   ),
   maxOutputLength: Type.Optional(
-    Type.Number({
+    Type.Integer({
       description:
-        "Maximum characters of output text per call. Default: no limit. Set to avoid flooding context.",
+        "Maximum characters of output text per call (1–50000). Default: no limit.",
+      minimum: 1,
+      maximum: 50000,
     }),
   ),
 });
@@ -1247,24 +1252,27 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         }
 
         const callIndex = params.callIndex;
-        if (callIndex !== undefined) {
-          if (callIndex < 0 || callIndex >= job.results.length) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Invalid callIndex ${callIndex}. Job has ${job.results.length} call${job.results.length === 1 ? "" : "s"} (0–${job.results.length - 1}).`,
-                },
-              ],
-              isError: true,
-            };
-          }
+        const callIndexError = validateCallIndex(callIndex, job.results.length - 1);
+        if (callIndexError) {
+          return {
+            content: [{ type: "text", text: callIndexError }],
+            isError: true,
+          };
+        }
+
+        const maxOutputLength = params.maxOutputLength;
+        const maxOutputLengthError = validateMaxOutputLength(maxOutputLength);
+        if (maxOutputLengthError) {
+          return {
+            content: [{ type: "text", text: maxOutputLengthError }],
+            isError: true,
+          };
         }
 
         const text = formatJobResults(job, {
           callIndex,
           includeToolCalls: params.includeToolCalls ?? false,
-          maxOutputLength: params.maxOutputLength,
+          maxOutputLength,
         });
 
         return {
