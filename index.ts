@@ -13,6 +13,7 @@ import * as path from "node:path";
 import { type ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type AgentConfig, STARTER_AGENT_NAME, discoverAgentsWithStarter } from "./agents.js";
+import { getMisplacedBackgroundWorktreeFieldError } from "./background-params.js";
 import {
   getActiveBackgroundJobCount,
   generateJobId,
@@ -1004,6 +1005,15 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         }
 
         // --- Validate calls ---
+        const misplacedWorktreeFieldError = getMisplacedBackgroundWorktreeFieldError(params.calls);
+        if (misplacedWorktreeFieldError) {
+          return {
+            content: [{ type: "text", text: misplacedWorktreeFieldError }],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+
         const normalized = normalizeCalls(params.calls, ctx.cwd);
         if (normalized.error || !normalized.calls) {
           return {
