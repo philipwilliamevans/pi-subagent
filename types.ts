@@ -41,6 +41,24 @@ export type BackgroundJobStatus =
   | "completed"
   | "failed";
 
+/** Lifecycle phase of a single background subagent call. */
+export type CallLifecyclePhase =
+  | "queued"
+  | "spawning"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface CallState {
+  phase: CallLifecyclePhase;
+  startedAt?: number;
+  spawnedAt?: number;
+  completedAt?: number;
+  toolCalls: number;
+  recentActivity: string[];
+}
+
 /** How to deliver completion of a background job. */
 export type BackgroundCompletionMode = "silent" | "message" | "trigger";
 
@@ -57,6 +75,10 @@ export interface BackgroundJob {
 	onComplete: BackgroundCompletionMode;
 	/** AbortController for cancellation. Created when the job starts. */
 	abortController?: AbortController;
+	/** Per-call lifecycle states, populated at job creation. */
+	callStates: CallState[];
+	/** Streaming partial results, updated as calls progress. */
+	intermediateResults?: SingleResult[];
 }
 
 /** Aggregated token usage from a subagent run. */

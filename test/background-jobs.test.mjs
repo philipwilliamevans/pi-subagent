@@ -581,3 +581,383 @@ test("renderBackgroundResult shows the started message", async () => {
     cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// FormatBackgroundCompletion — new excerpt features
+// ---------------------------------------------------------------------------
+
+test("formatBackgroundCompletion shows tool call count and output size", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatBackgroundCompletion } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_toolcount",
+      createdAt: Date.now() - 5000,
+      updatedAt: Date.now(),
+      status: "completed",
+      onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find files", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Find files", initialContext: "empty",
+        exitCode: 0,
+        messages: [
+          { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "find . -name '*.ts'" } }], timestamp: 1 },
+          { role: "tool", content: [{ type: "text", text: "file1.ts\nfile2.ts" }], timestamp: 2 },
+          { role: "assistant", content: [{ type: "text", text: "Found 2 TypeScript files." }], timestamp: 3 },
+        ],
+        stderr: "", usage: { input: 10, output: 30, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 50, turns: 2 },
+      }],
+    };
+
+    const text = formatBackgroundCompletion(job);
+    assert.match(text, /call 1: completed/);
+    assert.match(text, /1 tool call/);
+    assert.match(text, /output\)/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatBackgroundCompletion does not truncate output under 2000 chars", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatBackgroundCompletion } = await import(moduleUrl);
+
+    const shortOutput = "A".repeat(500);
+    const job = {
+      id: "subjob_short",
+      createdAt: Date.now() - 5000,
+      updatedAt: Date.now(),
+      status: "completed",
+      onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Short task", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Short task", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: shortOutput }], timestamp: 1 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatBackgroundCompletion(job);
+    assert.match(text, /completed successfully/);
+    assert.doesNotMatch(text, /Output truncated/);
+    assert.match(text, /A{500}/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatBackgroundCompletion shows truncation notice for output over 2000 chars", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatBackgroundCompletion } = await import(moduleUrl);
+
+    const longOutput = "B".repeat(2500);
+    const job = {
+      id: "subjob_long",
+      createdAt: Date.now() - 5000,
+      updatedAt: Date.now(),
+      status: "completed",
+      onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Long task", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Long task", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: longOutput }], timestamp: 1 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatBackgroundCompletion(job);
+    assert.match(text, /Output truncated/);
+    assert.match(text, /subagent_result/);
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FormatJobResults — subagent_result tool
+// ---------------------------------------------------------------------------
+
+test("formatJobResults returns error for missing results", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = { id: "subjob_noresults", createdAt: 0, updatedAt: 0, status: "completed", onComplete: "trigger", calls: [], results: [] };
+    assert.equal(formatJobResults(job, {}), "No results available for this job.");
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults returns full output for completed job", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_full",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Analyze", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Analyze", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Full analysis report here." }], timestamp: 1 }],
+        stderr: "", usage: { input: 10, output: 30, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 50, turns: 1 },
+      }],
+    };
+
+    const text = formatJobResults(job, {});
+    assert.match(text, /## explorer/);
+    assert.match(text, /completed/);
+    assert.match(text, /Full analysis report here/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults respects callIndex", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_multi",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [
+        { index: 0, agent: "explorer", prompt: "Find", effectiveCwd: "/tmp", initialContext: "empty" },
+        { index: 1, agent: "reviewer", prompt: "Check", effectiveCwd: "/tmp", initialContext: "empty" },
+      ],
+      results: [
+        { callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Find", initialContext: "empty", exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Search results" }], timestamp: 1 }], stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 } },
+        { callIndex: 1, agent: "reviewer", agentSource: "user", prompt: "Check", initialContext: "empty", exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Review results" }], timestamp: 2 }], stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 } },
+      ],
+    };
+
+    const textCall0 = formatJobResults(job, { callIndex: 0 });
+    assert.match(textCall0, /## explorer/);
+    assert.doesNotMatch(textCall0, /## reviewer/);
+
+    const textCall1 = formatJobResults(job, { callIndex: 1 });
+    assert.match(textCall1, /## reviewer/);
+    assert.doesNotMatch(textCall1, /## explorer/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults respects maxOutputLength", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const longOutput = "C".repeat(500);
+    const job = {
+      id: "subjob_capped",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Long task", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Long task", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: longOutput }], timestamp: 1 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatJobResults(job, { maxOutputLength: 100 });
+    assert.match(text, /truncated at 100 characters/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults includes tool calls when requested", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_toolcalls",
+      createdAt: 0, updatedAt: 1000,
+      status: "completed", onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Search", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Search", initialContext: "empty",
+        exitCode: 0,
+        messages: [
+          { role: "assistant", content: [{ type: "toolCall", name: "grep", arguments: { pattern: "test", path: "." } }], timestamp: 1 },
+          { role: "tool", content: [{ type: "text", text: "found" }], timestamp: 2 },
+          { role: "assistant", content: [{ type: "text", text: "Done searching." }], timestamp: 3 },
+        ],
+        stderr: "", usage: { input: 5, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 10, turns: 2 },
+      }],
+    };
+
+    const textWithout = formatJobResults(job, { includeToolCalls: false });
+    assert.doesNotMatch(textWithout, /Tool calls/);
+
+    const textWith = formatJobResults(job, { includeToolCalls: true });
+    assert.match(textWith, /### Tool calls/);
+    assert.match(textWith, /grep/);
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Render for subagent_result
+// ---------------------------------------------------------------------------
+
+test("renderSubagentResultCall shows jobId", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { renderSubagentResultCall } = await import(moduleUrl);
+
+    const component = renderSubagentResultCall({ jobId: "subjob_abc123" }, theme);
+    assert.match(collectText(component).join(" "), /subagent_result.*subjob_abc123/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("renderSubagentResultResult shows results content", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { renderSubagentResultResult } = await import(moduleUrl);
+
+    const component = renderSubagentResultResult(
+      { content: [{ type: "text", text: "## explorer — completed\n\nFull report here." }], details: {} },
+      false, theme,
+    );
+    const text = collectText(component).join(" ");
+    assert.match(text, /subagent_result/);
+    assert.match(text, /results/);
+    assert.match(text, /Full report/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("renderSubagentResultResult handles empty content", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { renderSubagentResultResult } = await import(moduleUrl);
+
+    const component = renderSubagentResultResult({ content: [], details: {} }, false, theme);
+    assert.match(collectText(component).join(" "), /no output/);
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FormatJobStatus with call states
+// ---------------------------------------------------------------------------
+
+test("formatJobStatus falls back gracefully without callStates", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_nocs",
+      createdAt: Date.now() - 30000,
+      updatedAt: Date.now() - 30000,
+      status: "running",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find tests", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [],
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /subjob_nocs/);
+    assert.match(text, /running/);
+    assert.match(text, /explorer/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobStatus honors callStates when present", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_cs",
+      createdAt: Date.now() - 30000,
+      updatedAt: Date.now() - 30000,
+      status: "running",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find tests", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [],
+      callStates: [
+        { phase: "running", startedAt: Date.now() - 25000, toolCalls: 3, recentActivity: ["→ read file.ts", "$ find . -name '*.ts'", "→ grep /test/ ."] },
+      ],
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /subjob_cs/);
+    assert.match(text, /running/);
+    assert.match(text, /3 tool calls/);
+    assert.match(text, /read file\.ts/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobStatus shows queued for callState without phase data", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_queued",
+      createdAt: Date.now() - 1000,
+      updatedAt: Date.now() - 1000,
+      status: "running",
+      calls: [{ index: 0, agent: "explorer", prompt: "Wait", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [],
+      callStates: [
+        { phase: "queued", toolCalls: 0, recentActivity: [] },
+      ],
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /subjob_queued/);
+    assert.match(text, /queued/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobStatus shows completed state with duration from callStates", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_donecs",
+      createdAt: Date.now() - 120000,
+      updatedAt: Date.now() - 60000,
+      status: "completed",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find files", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Find files", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], timestamp: 1000 }],
+        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+      callStates: [
+        { phase: "completed", startedAt: Date.now() - 120000, completedAt: Date.now() - 60000, toolCalls: 2, recentActivity: [] },
+      ],
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /subjob_donecs/);
+    assert.match(text, /completed/);
+    assert.match(text, /took/);
+  } finally {
+    cleanup();
+  }
+});

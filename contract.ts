@@ -167,6 +167,10 @@ By default the completion auto-triggers a parent turn — just omit \`onComplete
 Check status anytime with \`subagent_status\` (omit \`jobId\` to list all).
 Cancel a running job with \`subagent_cancel\` (requires \`confirm: true\`).
 
+Retrieve the full output from a completed job using \`subagent_result\`.
+The auto-injected message includes a compact excerpt; use \`subagent_result\`
+when you need the complete response text.
+
 Background jobs do not support persistent sessions (\`session\`).
 Omit \`session\` for background delegation.
 
@@ -237,6 +241,25 @@ export function formatSubagentStatusToolDescription(): string {
     "Examples:",
     '  { "jobId": "subjob_abc123" }',
     '  {}',
+  ].join("\n");
+}
+
+export function formatSubagentResultToolDescription(): string {
+  return [
+    "Retrieve the full output from a completed background subagent job.",
+    "",
+    "Use this tool when the auto-injected completion message excerpt",
+    "was truncated or you need the complete response text from a",
+    "finished subagent.",
+    "",
+    "By default returns only the final assistant text (tool calls excluded).",
+    "Set includeToolCalls to true to see the full tool call trace.",
+    "Use maxOutputLength to cap the response size.",
+    "",
+    "Examples:",
+    '  { "jobId": "subjob_abc123" }',
+    '  { "jobId": "subjob_abc123", "callIndex": 0 }',
+    '  { "jobId": "subjob_abc123", "callIndex": 0, "includeToolCalls": true, "maxOutputLength": 8000 }',
   ].join("\n");
 }
 

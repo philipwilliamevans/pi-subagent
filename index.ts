@@ -24,6 +24,7 @@ import {
   CALLS_SCHEMA_DESCRIPTION,
   formatAvailableSubagentsPrompt,
   formatSubagentCancelToolDescription,
+  formatSubagentResultToolDescription,
   formatSubagentStartToolDescription,
   formatSubagentStatusToolDescription,
   formatSubagentToolDescription,
@@ -33,6 +34,7 @@ import {
 import {
   formatBackgroundCompletion,
   formatJobList,
+  formatJobResults,
   formatJobStatus,
   renderBackgroundCall,
   renderBackgroundResult,
@@ -42,6 +44,8 @@ import {
   renderJobStatusCall,
   renderJobStatusResult,
   renderResult,
+  renderSubagentResultCall,
+  renderSubagentResultResult,
 } from "./render.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
 import { getResultSummaryText } from "./runner-events.js";
@@ -50,6 +54,7 @@ import { acquireSessionLocks, releaseSessionLocks, type SessionLockTarget } from
 import {
   type BackgroundCompletionMode,
   type BackgroundJob,
+  type CallState,
   type InitialContext,
   type NormalizedCall,
   type SingleResult,
@@ -57,6 +62,7 @@ import {
   type SubagentSessionDetails,
   DEFAULT_INITIAL_CONTEXT,
   emptyUsage,
+  getDisplayItems,
   isResultError,
   isResultSuccess,
 } from "./types.js";
@@ -135,6 +141,31 @@ const SubagentStatusParams = Type.Object({
   jobId: Type.Optional(
     Type.String({
       description: "Job ID to inspect. Omit to list all jobs.",
+    }),
+  ),
+});
+
+const SubagentResultParams = Type.Object({
+  jobId: Type.String({
+    description: "ID of the completed background job to retrieve results for.",
+  }),
+  callIndex: Type.Optional(
+    Type.Number({
+      description:
+        "0-based index of a specific call to retrieve. Omit to get all calls.",
+    }),
+  ),
+  includeToolCalls: Type.Optional(
+    Type.Boolean({
+      description:
+        "When true, include tool calls in addition to final assistant text. Default: false (final text only).",
+      default: false,
+    }),
+  ),
+  maxOutputLength: Type.Optional(
+    Type.Number({
+      description:
+        "Maximum characters of output text per call. Default: no limit. Set to avoid flooding context.",
     }),
   ),
 });
@@ -1013,12 +1044,19 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         const createdAt = Date.now();
         const abortController = new AbortController();
 
+        const callStates: CallState[] = calls.map(() => ({
+          phase: "queued" as const,
+          toolCalls: 0,
+          recentActivity: [],
+        }));
+
         const job: BackgroundJob = {
           id: jobId,
           createdAt,
           updatedAt: createdAt,
           status: "running",
           calls,
+          callStates,
           promise: Promise.resolve(),
           onComplete,
           abortController,
@@ -1159,6 +1197,85 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       renderResult: (result, { expanded }, theme) =>
         renderCancelResult(result, expanded, theme),
     });
+
+    // -----------------------------------------------------------------------
+    // subagent_result — retrieve full output from a completed background job
+    // -----------------------------------------------------------------------
+
+    pi.registerTool({
+      name: "subagent_result",
+      label: "Subagent result",
+      description: formatSubagentResultToolDescription(),
+      parameters: SubagentResultParams,
+
+      async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+        const job = getBackgroundJob(params.jobId);
+        if (!job) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Unknown background job: \`${params.jobId}\`. Use \`subagent_status\` to list known jobs.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (job.status === "running" || job.status === "cancelling") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Job \`${job.id}\` is still ${job.status}. Wait for completion, then retrieve results.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (!job.results || job.results.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Job \`${job.id}\` has no results (status: ${job.status}).`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const callIndex = params.callIndex;
+        if (callIndex !== undefined) {
+          if (callIndex < 0 || callIndex >= job.results.length) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Invalid callIndex ${callIndex}. Job has ${job.results.length} call${job.results.length === 1 ? "" : "s"} (0–${job.results.length - 1}).`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+
+        const text = formatJobResults(job, {
+          callIndex,
+          includeToolCalls: params.includeToolCalls ?? false,
+          maxOutputLength: params.maxOutputLength,
+        });
+
+        return {
+          content: [{ type: "text", text }],
+        };
+      },
+
+      renderCall: (args, theme) => renderSubagentResultCall(args, theme),
+      renderResult: (result, { expanded }, theme) =>
+        renderSubagentResultResult(result, expanded, theme),
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -1287,18 +1404,69 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
   /**
    * Execute a background job's calls and update its state upon completion.
    */
+  /**
+   * Update call state from partial subagent results (streamed via onUpdate).
+   */
+  function updateCallStateFromPartial(cs: CallState, partial: SingleResult): void {
+    const items = getDisplayItems(partial.messages);
+    const toolCallCount = items.filter((i) => i.type === "toolCall").length;
+
+    if (toolCallCount > cs.toolCalls) {
+      cs.toolCalls = toolCallCount;
+    }
+
+    // Collect recent tool calls as activity strings
+    const newCalls = items
+      .filter((i) => i.type === "toolCall")
+      .slice(-3) // last 3 tool calls
+      .map((i) => formatActivityLine(i.name, i.args));
+
+    // Prepend new activity, keep latest 5
+    cs.recentActivity = [...newCalls, ...cs.recentActivity].slice(0, 5);
+
+    // Phase transition on first tool call or activity
+    if (cs.phase === "spawning" && (cs.toolCalls > 0 || toolCallCount > 0)) {
+      cs.phase = "running";
+      cs.spawnedAt = Date.now();
+    }
+  }
+
+  function formatActivityLine(toolName: string, args: Record<string, unknown>): string {
+    switch (toolName) {
+      case "read":
+        return `→ read ${args.path || args.file_path || "?"}`;
+      case "bash":
+        return `$ ${String(args.command || "").slice(0, 60)}`;
+      case "write":
+        return `→ write ${args.path || "?"}`;
+      case "edit":
+        return `→ edit ${args.path || "?"}`;
+      case "grep":
+        return `→ grep /${args.pattern || ""}/ ${args.path || ""}`;
+      default:
+        return `→ ${toolName}`;
+    }
+  }
+
   async function runBackgroundSubagentJob(
     job: BackgroundJob,
     agents: AgentConfig[],
     defaultCwd: string,
     makeDetails: ReturnType<typeof makeDetailsFactory>,
   ): Promise<void> {
+    // Initialize intermediate results for streaming
+    job.intermediateResults = job.calls.map((call) => makePlaceholderResult(call));
+
     try {
       const results = await mapConcurrent(
         job.calls,
         MAX_BACKGROUND_CONCURRENCY,
-        async (call) => {
-          return await runAgent({
+        async (call, index) => {
+          const cs = job.callStates[index];
+          cs.phase = "spawning";
+          cs.startedAt = Date.now();
+
+          const result = await runAgent({
             cwd: defaultCwd,
             agents,
             callIndex: call.index,
@@ -1314,11 +1482,28 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
             maxDepth,
             preventCycles,
             signal: job.abortController?.signal,
-            onUpdate: undefined,
+            onUpdate: (partial) => {
+              const details = partial.details as SubagentDetails | undefined;
+              if (details?.results?.[0]) {
+                // Store intermediate result for status queries
+                if (job.intermediateResults) {
+                  job.intermediateResults[index] = details.results[0];
+                }
+                updateCallStateFromPartial(cs, details.results[0]);
+              }
+            },
             makeDetails,
           });
+
+          // Phase transition based on result
+          cs.phase = isResultError(result) ? "failed" : "completed";
+          cs.completedAt = Date.now();
+          return result;
         },
       );
+
+      // Clean up intermediate results
+      job.intermediateResults = undefined;
 
       // Determine final status. Cancellation takes priority.
       if (job.status === "cancelling") {
@@ -1332,6 +1517,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       job.updatedAt = Date.now();
       postCompletionMessage(job);
     } catch (error) {
+      job.intermediateResults = undefined;
       job.status = "failed";
       job.error = error instanceof Error ? error.message : String(error);
       job.updatedAt = Date.now();

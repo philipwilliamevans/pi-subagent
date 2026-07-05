@@ -8,6 +8,7 @@ import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { getProcessErrorText, getResultSummaryText } from "./runner-events.js";
 import {
 	type BackgroundJob,
+	type CallState,
 	type DisplayItem,
 	type InitialContext,
 	type SingleResult,
@@ -371,6 +372,8 @@ function formatCallStatusLabel(r: SingleResult | undefined): string {
 	return "completed";
 }
 
+const EXCERPT_MAX_LENGTH = 2000;
+
 /**
  * Compact summary of a completed background job, suitable for message injection.
  * Supports completed, failed, and cancelled states.
@@ -402,10 +405,24 @@ export function formatBackgroundCompletion(job: BackgroundJob): string {
 			const callStatus = formatCallStatusLabel(r);
 			const agentName = r.agent || job.calls[index]?.agent || `call ${index}`;
 			const summary = getResultSummaryText(r);
-			const excerpt = summary && summary !== "(no output)"
-				? `\n  ${truncate(summary, 200).replace(/\n/g, "\n  ")}`
+
+			// Tool call count and output size in the per-call header
+			const displayItems = getDisplayItems(r.messages);
+			const toolCallItems = displayItems.filter((i) => i.type === "toolCall");
+			const toolCallInfo = toolCallItems.length > 0
+				? ` (${toolCallItems.length} tool call${toolCallItems.length === 1 ? "" : "s"}, ${formatTokens(summary.length)} output)`
 				: "";
-			lines.push(`- ${agentName} call ${index + 1}: ${callStatus}${excerpt}`);
+
+			const excerpt = summary && summary !== "(no output)"
+				? `\n  ${truncate(summary, EXCERPT_MAX_LENGTH).replace(/\n/g, "\n  ")}`
+				: "";
+
+			const wasTruncated = summary && summary.length > EXCERPT_MAX_LENGTH;
+			const truncationNotice = wasTruncated
+				? `\n  *Output truncated at ${EXCERPT_MAX_LENGTH} characters. Full report available via \`subagent_result\`.*`
+				: "";
+
+			lines.push(`- ${agentName} call ${index + 1}: ${callStatus}${toolCallInfo}${excerpt}${truncationNotice}`);
 		}
 	}
 
@@ -423,14 +440,35 @@ export function formatBackgroundCompletion(job: BackgroundJob): string {
 /**
  * Format a single call's status line for subagent_status output.
  */
-function formatCallStatusLine(call: BackgroundJob["calls"][number], r: SingleResult | undefined): string {
-	const label = formatCallStatusLabel(r);
-	const elapsed = r && r.exitCode !== -1
-		? ` (took ${formatElapsed(r.messages[0]?.timestamp ? r.messages[0].timestamp : 0, Date.now())})`
-		: r && r.exitCode === -1
-			? ` (${formatAge(call.index === 0 ? Date.now() : 0)} elapsed)`
-			: "";
-	return `  ${call.agent} — ${label}${elapsed}`;
+function formatCallStatusLine(
+	call: BackgroundJob["calls"][number],
+	callState: CallState | undefined,
+	_result: SingleResult | undefined,
+): string {
+	if (!callState) {
+		const label = _result ? formatCallStatusLabel(_result) : "queued";
+		return `  ${call.agent} — ${label}`;
+	}
+
+	const label = callState.phase;
+	let elapsed = "";
+	if (callState.completedAt && callState.startedAt) {
+		elapsed = ` (took ${formatDuration(callState.completedAt - callState.startedAt)})`;
+	} else if (callState.startedAt) {
+		elapsed = ` (${formatAge(callState.startedAt)} elapsed)`;
+	}
+
+	let line = `  ${call.agent} — ${label}${elapsed}`;
+
+	if (callState.recentActivity.length > 0 && callState.phase === "running") {
+		line += `\n    Latest: ${callState.recentActivity[0]}`;
+	}
+
+	if (callState.toolCalls > 0) {
+		line += `\n    ${callState.toolCalls} tool call${callState.toolCalls === 1 ? "" : "s"} so far`;
+	}
+
+	return line;
 }
 
 /**
@@ -441,8 +479,9 @@ export function formatJobStatus(job: BackgroundJob): string {
 	const duration = job.results ? formatElapsed(job.createdAt, job.updatedAt) : "";
 
 	const callLines = job.calls.map((call, index) => {
+		const cs = job.callStates?.[index];
 		const r = job.results?.[index];
-		return formatCallStatusLine(call, r);
+		return formatCallStatusLine(call, cs, r);
 	});
 
 	const when = job.status === "running" || job.status === "cancelling"
@@ -489,6 +528,73 @@ export function formatJobList(jobs: BackgroundJob[]): string {
 	lines.push(parts.join(", "));
 
 	return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// FormatJobResults — for the subagent_result tool
+// ---------------------------------------------------------------------------
+
+/**
+ * Format the full results of a completed background job.
+ */
+export function formatJobResults(
+	job: BackgroundJob,
+	options: {
+		callIndex?: number;
+		includeToolCalls?: boolean;
+		maxOutputLength?: number;
+	},
+): string {
+	const { callIndex, includeToolCalls, maxOutputLength } = options;
+	const results = job.results;
+	if (!results || results.length === 0) {
+		return "No results available for this job.";
+	}
+
+	const targetResults =
+		callIndex !== undefined ? [results[callIndex]] : results;
+
+	const lines: string[] = [];
+	for (const r of targetResults) {
+		if (r.exitCode === -1) {
+			lines.push(`## ${r.agent} (still running)`);
+			continue;
+		}
+
+		const summary = getResultSummaryText(r);
+		const items = includeToolCalls ? getDisplayItems(r.messages) : [];
+
+		lines.push(`## ${r.agent} — ${isResultError(r) ? "failed" : "completed"}`);
+		lines.push("");
+
+		if (summary && summary !== "(no output)") {
+			const output =
+				maxOutputLength && summary.length > maxOutputLength
+					? summary.slice(0, maxOutputLength) +
+						`\n\n[... truncated at ${maxOutputLength} characters]`
+					: summary;
+			lines.push(output);
+			lines.push("");
+		}
+
+		if (includeToolCalls && items.length > 0) {
+			lines.push("### Tool calls");
+			for (const item of items) {
+				if (item.type === "toolCall") {
+					lines.push(`- ${item.name}(${JSON.stringify(item.args)})`);
+				}
+			}
+			lines.push("");
+		}
+
+		const usage = formatUsage(r.usage, r.model);
+		if (usage) {
+			lines.push(`*${usage}*`);
+			lines.push("");
+		}
+	}
+
+	return lines.join("\n").trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -576,6 +682,56 @@ export function renderJobStatusResult(
 	const first = result.content[0];
 	const text = first?.type === "text" && first.text ? first.text : "(no status)";
 	return new Text(text, 0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Render for subagent_result
+// ---------------------------------------------------------------------------
+
+/**
+ * Render for subagent_result tool call.
+ */
+export function renderSubagentResultCall(
+	args: Record<string, any>,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text {
+	const jobId = typeof args.jobId === "string" ? args.jobId : "?";
+	return new Text(
+		theme.fg("toolTitle", theme.bold("subagent_result ")) + theme.fg("dim", jobId),
+		0,
+		0,
+	);
+}
+
+/**
+ * Render for subagent_result tool result.
+ */
+export function renderSubagentResultResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+	_expanded: boolean,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Container | Text {
+	const first = result.content[0];
+	const text = first?.type === "text" && first.text ? first.text : "";
+
+	if (!text) {
+		return new Text("(no output)", 0, 0);
+	}
+
+	const mdTheme = getMarkdownTheme();
+	const container = new Container();
+	container.addChild(
+		new Text(
+			theme.fg("success", "✓ ") +
+				theme.fg("toolTitle", theme.bold("subagent_result ")) +
+				theme.fg("muted", "results"),
+			0,
+			0,
+		),
+	);
+	container.addChild(new Spacer(1));
+	container.addChild(new Markdown(text.trim(), 0, 0, mdTheme));
+	return container;
 }
 
 // ---------------------------------------------------------------------------
