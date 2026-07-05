@@ -53,6 +53,7 @@ import {
   renderSubagentResultCall,
   renderSubagentResultResult,
 } from "./render.js";
+import { updateCallStateFromPartial } from "./background-activity.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
 import { getResultSummaryText } from "./runner-events.js";
 import { mapConcurrent, runAgent } from "./runner.js";
@@ -69,7 +70,6 @@ import {
   type WorktreeMode,
   DEFAULT_INITIAL_CONTEXT,
   emptyUsage,
-  getDisplayItems,
   isResultError,
   isResultSuccess,
   validateCallIndex,
@@ -1548,46 +1548,6 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
   /**
    * Update call state from partial subagent results (streamed via onUpdate).
    */
-  function updateCallStateFromPartial(cs: CallState, partial: SingleResult): void {
-    const items = getDisplayItems(partial.messages);
-    const toolCallCount = items.filter((i) => i.type === "toolCall").length;
-
-    if (toolCallCount > cs.toolCalls) {
-      cs.toolCalls = toolCallCount;
-    }
-
-    // Collect recent tool calls as activity strings
-    const newCalls = items
-      .filter((i) => i.type === "toolCall")
-      .slice(-3) // last 3 tool calls
-      .map((i) => formatActivityLine(i.name, i.args));
-
-    // Prepend new activity, keep latest 5
-    cs.recentActivity = [...newCalls, ...cs.recentActivity].slice(0, 5);
-
-    // Phase transition on first tool call or activity
-    if (cs.phase === "spawning" && (cs.toolCalls > 0 || toolCallCount > 0)) {
-      cs.phase = "running";
-      cs.spawnedAt = Date.now();
-    }
-  }
-
-  function formatActivityLine(toolName: string, args: Record<string, unknown>): string {
-    switch (toolName) {
-      case "read":
-        return `→ read ${args.path || args.file_path || "?"}`;
-      case "bash":
-        return `$ ${String(args.command || "").slice(0, 60)}`;
-      case "write":
-        return `→ write ${args.path || "?"}`;
-      case "edit":
-        return `→ edit ${args.path || "?"}`;
-      case "grep":
-        return `→ grep /${args.pattern || ""}/ ${args.path || ""}`;
-      default:
-        return `→ ${toolName}`;
-    }
-  }
 
   async function runBackgroundSubagentJob(
     job: BackgroundJob,
