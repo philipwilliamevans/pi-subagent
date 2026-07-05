@@ -1,4 +1,5 @@
 /.tickets/
 
-# Background subagent job persistence
+# Background subagent job persistence and isolated worktrees
 .pi-subagent/jobs/
+.pi-subagent/worktrees/
