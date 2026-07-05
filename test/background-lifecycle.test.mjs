@@ -456,3 +456,157 @@ test("simulated cancellation flow: completed calls keep phase, running calls bec
     cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Integration: normal phase cycle (queued → spawning → running → completed)
+// ---------------------------------------------------------------------------
+
+test("normal flow: queued call transitions through spawning and running to completed via finishCallState", async () => {
+  const { moduleUrl, cleanup } = createTestableLifecycleModule();
+  try {
+    const { finishCallState } = await import(moduleUrl);
+    const now = Date.now();
+
+    // Start with a call in queued phase (as created by registerBackgroundJob).
+    const job = makeJob({
+      status: "running",
+      callStates: [
+        makeCallState("queued"),
+      ],
+    });
+
+    // Simulate worker picking up: queued → spawning → running
+    const cs = job.callStates[0];
+    assert.equal(cs.phase, "queued");
+
+    cs.phase = "spawning";
+    cs.startedAt = now - 5000;
+    assert.equal(cs.phase, "spawning");
+
+    cs.phase = "running";
+    assert.equal(cs.phase, "running");
+    assert.ok(cs.startedAt, "startedAt should be set");
+
+    // Simulate runAgent returning a successful result
+    const successResult = makeResult({
+      exitCode: 0,
+      messages: [
+        { role: "assistant", content: [{ type: "text", text: "Done." }], timestamp: 1 },
+      ],
+      sawAgentEnd: true,
+    });
+
+    const phase = finishCallState(job, 0, successResult, now);
+    assert.equal(phase, "completed");
+    assert.equal(job.callStates[0].phase, "completed");
+    assert.equal(job.callStates[0].startedAt, now - 5000);
+    assert.ok(job.callStates[0].completedAt, "completedAt should be set");
+    assert.ok(job.callStates[0].completedAt !== undefined && job.callStates[0].completedAt >= now - 5000);
+  } finally {
+    cleanup();
+  }
+});
+
+test("normal flow: queued call transitions through spawning and running to failed via finishCallState", async () => {
+  const { moduleUrl, cleanup } = createTestableLifecycleModule();
+  try {
+    const { finishCallState } = await import(moduleUrl);
+    const now = Date.now();
+
+    const job = makeJob({
+      status: "running",
+      callStates: [
+        makeCallState("queued"),
+      ],
+    });
+
+    // Worker picks up the call
+    const cs = job.callStates[0];
+    cs.phase = "spawning";
+    cs.startedAt = now - 3000;
+    cs.phase = "running";
+
+    // runAgent returns an error
+    const errorResult = makeResult({
+      exitCode: 1,
+      stopReason: "error",
+      errorMessage: "Something went wrong",
+    });
+
+    const phase = finishCallState(job, 0, errorResult, now);
+    assert.equal(phase, "failed");
+    assert.equal(job.callStates[0].phase, "failed");
+    assert.ok(job.callStates[0].completedAt, "completedAt should be set");
+  } finally {
+    cleanup();
+  }
+});
+
+test("cancellation mid-running: finishCallState preserves cancelled call phase", async () => {
+  const { moduleUrl, cleanup } = createTestableLifecycleModule();
+  try {
+    const { markPendingCallsCancelled, finishCallState } = await import(moduleUrl);
+    const now = Date.now();
+
+    // A job with one running call
+    const job = makeJob({
+      status: "running",
+      callStates: [
+        makeCallState("running", { startedAt: now - 5000 }),
+      ],
+    });
+
+    // Cancellation fires while the call is running
+    job.status = "cancelling";
+    markPendingCallsCancelled(job, now);
+    assert.equal(job.callStates[0].phase, "cancelled");
+
+    // The worker finishes and calls finishCallState with an aborted result
+    const abortedResult = makeResult({
+      exitCode: 130,
+      stopReason: "aborted",
+      errorMessage: "Subagent was aborted.",
+    });
+    const finalPhase = finishCallState(job, 0, abortedResult, now + 2000);
+    assert.equal(finalPhase, "cancelled");
+    assert.equal(job.callStates[0].phase, "cancelled");
+  } finally {
+    cleanup();
+  }
+});
+
+test("cancellation mid-running: finishCallState preserves cancelled even for a successful result", async () => {
+  const { moduleUrl, cleanup } = createTestableLifecycleModule();
+  try {
+    const { markPendingCallsCancelled, finishCallState } = await import(moduleUrl);
+    const now = Date.now();
+
+    const job = makeJob({
+      status: "running",
+      callStates: [
+        makeCallState("running", { startedAt: now - 5000 }),
+      ],
+    });
+
+    // Cancellation fires
+    job.status = "cancelling";
+    markPendingCallsCancelled(job, now);
+    assert.equal(job.callStates[0].phase, "cancelled");
+
+    // Worker finishes with a semantically successful result
+    const successResult = makeResult({
+      exitCode: 0,
+      messages: [
+        { role: "assistant", content: [{ type: "text", text: "Done." }], timestamp: 1 },
+      ],
+      sawAgentEnd: true,
+    });
+
+    // finishCallState must NOT overwrite cancelled
+    const finalPhase = finishCallState(job, 0, successResult, now + 2000);
+    assert.equal(finalPhase, "cancelled");
+    assert.equal(job.callStates[0].phase, "cancelled");
+  } finally {
+    cleanup();
+  }
+});
