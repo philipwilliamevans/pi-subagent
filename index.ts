@@ -150,9 +150,10 @@ const SubagentResultParams = Type.Object({
     description: "ID of the completed background job to retrieve results for.",
   }),
   callIndex: Type.Optional(
-    Type.Number({
+    Type.Integer({
       description:
         "0-based index of a specific call to retrieve. Omit to get all calls.",
+      minimum: 0,
     }),
   ),
   includeToolCalls: Type.Optional(
@@ -163,9 +164,11 @@ const SubagentResultParams = Type.Object({
     }),
   ),
   maxOutputLength: Type.Optional(
-    Type.Number({
+    Type.Integer({
       description:
-        "Maximum characters of output text per call. Default: no limit. Set to avoid flooding context.",
+        "Maximum characters of output text per call (1–50000). Default: no limit.",
+      minimum: 1,
+      maximum: 50000,
     }),
   ),
 });
@@ -1248,7 +1251,18 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
 
         const callIndex = params.callIndex;
         if (callIndex !== undefined) {
-          if (callIndex < 0 || callIndex >= job.results.length) {
+          if (!Number.isSafeInteger(callIndex) || callIndex < 0) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Invalid callIndex ${callIndex}. Must be a non-negative integer.`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          if (callIndex >= job.results.length) {
             return {
               content: [
                 {
@@ -1261,10 +1275,25 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           }
         }
 
+        const maxOutputLength = params.maxOutputLength;
+        if (maxOutputLength !== undefined) {
+          if (!Number.isSafeInteger(maxOutputLength) || maxOutputLength < 1 || maxOutputLength > 50000) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Invalid maxOutputLength ${maxOutputLength}. Must be an integer from 1 to 50000.`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+
         const text = formatJobResults(job, {
           callIndex,
           includeToolCalls: params.includeToolCalls ?? false,
-          maxOutputLength: params.maxOutputLength,
+          maxOutputLength,
         });
 
         return {

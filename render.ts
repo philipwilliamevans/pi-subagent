@@ -551,8 +551,19 @@ export function formatJobResults(
 		return "No results available for this job.";
 	}
 
+	// Defensive validation for callIndex — should be pre-validated by caller.
+	if (callIndex !== undefined && (!Number.isSafeInteger(callIndex) || callIndex < 0 || callIndex >= results.length)) {
+		return "No results available for this job.";
+	}
+
 	const targetResults =
 		callIndex !== undefined ? [results[callIndex]] : results;
+
+	// Defensive: clamp maxOutputLength to a safe positive integer for truncation.
+	const effectiveMaxOutputLength =
+		typeof maxOutputLength === "number" && Number.isFinite(maxOutputLength) && maxOutputLength > 0
+			? Math.floor(maxOutputLength)
+			: undefined;
 
 	const lines: string[] = [];
 	for (const r of targetResults) {
@@ -569,9 +580,9 @@ export function formatJobResults(
 
 		if (summary && summary !== "(no output)") {
 			const output =
-				maxOutputLength && summary.length > maxOutputLength
-					? summary.slice(0, maxOutputLength) +
-						`\n\n[... truncated at ${maxOutputLength} characters]`
+				effectiveMaxOutputLength !== undefined && summary.length > effectiveMaxOutputLength
+					? summary.slice(0, effectiveMaxOutputLength) +
+						`\n\n[... truncated at ${effectiveMaxOutputLength} characters]`
 					: summary;
 			lines.push(output);
 			lines.push("");
