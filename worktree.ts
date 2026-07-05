@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { WorktreeMetadata } from "./types.js";
@@ -22,10 +23,27 @@ export function getHeadCommit(cwd: string): string {
   return git(cwd, ["rev-parse", "HEAD"]).trim();
 }
 
+export function hashRepoRoot(repoRoot: string): string {
+  return createHash("sha256").update(fs.realpathSync(repoRoot)).digest("hex").slice(0, 8);
+}
+
+export function getWorktreeProjectSlug(repoRoot: string): string {
+  return `${path.basename(repoRoot)}-${hashRepoRoot(repoRoot)}`;
+}
+
+export function getWorktreeBaseDir(repoRoot: string): string {
+  return path.join(path.dirname(repoRoot), ".pi-worktrees", getWorktreeProjectSlug(repoRoot));
+}
+
+export function getWorktreePath(cwd: string, jobId: string): string {
+  const repoRoot = getRepoRoot(cwd);
+  return path.join(getWorktreeBaseDir(repoRoot), jobId);
+}
+
 export function createWorktree(cwd: string, jobId: string): WorktreeMetadata {
   const repoRoot = getRepoRoot(cwd);
   const baseCommit = getHeadCommit(repoRoot);
-  const worktreesDir = path.join(repoRoot, ".pi-subagent", "worktrees");
+  const worktreesDir = getWorktreeBaseDir(repoRoot);
   fs.mkdirSync(worktreesDir, { recursive: true });
 
   const worktreePath = path.join(worktreesDir, jobId);

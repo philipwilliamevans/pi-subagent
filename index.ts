@@ -25,6 +25,7 @@ import {
   updateBackgroundJobStatus,
   setBackgroundJobResults,
   persistJobResultArtifact,
+  persistBackgroundJob,
 } from "./background-jobs.js";
 import {
   CALLS_SCHEMA_DESCRIPTION,
@@ -1259,9 +1260,11 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         }
 
         // Proceed with cancellation
+        const now = Date.now();
         job.status = "cancelling";
-        job.updatedAt = Date.now();
-        markPendingCallsCancelled(job, Date.now());
+        job.updatedAt = now;
+        markPendingCallsCancelled(job, now);
+        persistBackgroundJob(job);
         job.abortController?.abort();
 
         return {
@@ -1569,6 +1572,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       try {
         job.worktreeMetadata = createWorktree(defaultCwd, job.id);
         job.updatedAt = Date.now();
+        persistBackgroundJob(job);
       } catch (error) {
         job.status = "failed";
         job.updatedAt = Date.now();

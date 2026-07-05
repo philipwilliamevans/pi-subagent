@@ -9,8 +9,10 @@
  * from being read on reload. Persisted state excludes unserializable fields
  * (promise, abortController, live callbacks).
  *
- * Jobs that were `running` or `cancelling` when the process exited are
- * reloaded as `interrupted`.
+ * Jobs that were `running` when the process exited are reloaded as
+ * `interrupted`. Jobs that were `cancelling` are reloaded as `cancelled` only
+ * when their persisted call states show the user-confirmed cancellation was
+ * already applied; otherwise they fall back to `interrupted`.
  */
 
 import * as fs from "node:fs";
@@ -98,13 +100,19 @@ function getResultPath(baseDir: string, jobId: string): string {
  * registry. Unserializable fields (promise, abortController) are left as
  * defaults.
  *
- * If the persisted status was "running" or "cancelling" it is upgraded to
- * "interrupted" so that the caller knows the job did not complete normally.
+ * If the persisted status was "running" it is upgraded to "interrupted" so
+ * that the caller knows the job did not complete normally. A persisted
+ * "cancelling" job is treated as "cancelled" only if every unfinished call was
+ * already marked cancelled before shutdown.
  */
 function hydrateJob(state: PersistedJobState): BackgroundJob {
   let status = state.status;
-  if (status === "running" || status === "cancelling") {
+  if (status === "running") {
     status = "interrupted";
+  } else if (status === "cancelling") {
+    status = hasConfirmedCancellationState(state.callStates)
+      ? "cancelled"
+      : "interrupted";
   }
 
   return {
@@ -124,6 +132,13 @@ function hydrateJob(state: PersistedJobState): BackgroundJob {
     promise: Promise.resolve(),
     abortController: undefined,
   };
+}
+
+function hasConfirmedCancellationState(callStates: CallState[] | undefined): boolean {
+  if (!callStates || callStates.length === 0) return false;
+  return callStates.every((cs) =>
+    cs.phase === "completed" || cs.phase === "failed" || cs.phase === "cancelled"
+  ) && callStates.some((cs) => cs.phase === "cancelled");
 }
 
 /**
@@ -247,7 +262,8 @@ export function loadPersistedJob(
  *
  * Returns only jobs that have reached a terminal state (completed, failed,
  * cancelled, interrupted). Active/running jobs from a previous session are
- * returned as `interrupted`.
+ * returned as `interrupted`; cancelling jobs are returned as `cancelled` when
+ * the persisted call states show cancellation was already confirmed.
  *
  * Corrupted entries are skipped with a warning.
  */

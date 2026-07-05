@@ -9,7 +9,7 @@
    - `--subagent-max-depth`
    - `--subagent-prevent-cycles` / `--no-subagent-prevent-cycles`
 3. Runtime delegation config is resolved from CLI flags, Pi runtime flags, and environment variables.
-4. On `session_start`, the extension discovers agents and may create the starter `explore` agent.
+4. On `session_start`, the extension configures the background job store under the current cwd, reloads persisted jobs, discovers agents, and may create the starter `explore` agent.
 5. On `before_agent_start`, the extension appends available subagent information and tool rules to the parent agent system prompt.
 6. If depth allows delegation, the extension registers the foreground and background tool set.
 
@@ -18,7 +18,7 @@
 | Tool | Purpose | Execution style |
 | --- | --- | --- |
 | `subagent` | Run one or more subagent calls and wait for results | Foreground, bounded parallelism |
-| `subagent_start` | Start a background job and return immediately | Root parent only, in-memory job |
+| `subagent_start` | Start a background job and return immediately | Root parent only, live job with persisted state |
 | `subagent_status` | List jobs or inspect one job | Read-only |
 | `subagent_cancel` | Abort a running background job | Requires `confirm: true` |
 | `subagent_result` | Retrieve full output from completed background jobs | Read-only |
@@ -47,7 +47,9 @@ The `subagent_start` tool is deliberately narrower:
 - It rejects persistent sessions.
 - It rejects `initialContext: "parent"`.
 - It enforces the active background job limit.
-- It creates an in-memory `BackgroundJob`.
+- It accepts `worktreeMode: "shared"` (default) or `"isolated"`.
+- It checks git preconditions before starting isolated worktree jobs.
+- It creates a live `BackgroundJob` and persists state when the job store is configured.
 - It starts asynchronous execution and returns the job ID immediately.
 
 Completion is posted back into the parent session with `pi.sendMessage` unless the job uses `onComplete: "silent"`.
@@ -63,4 +65,3 @@ Completion is posted back into the parent session with `pi.sendMessage` unless t
 - Job lifecycle transitions.
 
 It should not grow low-level parsing, rendering, or process-spawning details. Those are already separated into dedicated modules.
-

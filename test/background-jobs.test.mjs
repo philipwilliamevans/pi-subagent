@@ -1524,6 +1524,102 @@ test("updateBackgroundJobStatus persists status change", async () => {
   }
 });
 
+test("persistBackgroundJob persists mutated call states", async () => {
+  const mod = await import("../background-jobs.ts");
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-bg-save-callstates-"));
+  try {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(baseDir);
+
+    const id = mod.generateJobId();
+    const job = {
+      id,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      status: "running",
+      calls: [],
+      callStates: [{ phase: "running", toolCalls: 0, recentActivity: [] }],
+      promise: Promise.resolve(),
+      onComplete: "trigger",
+    };
+    mod.registerBackgroundJob(job);
+
+    job.status = "cancelling";
+    job.callStates[0].phase = "cancelled";
+    job.callStates[0].completedAt = 12345;
+    mod.persistBackgroundJob(job);
+
+    const statePath = path.join(baseDir, ".pi-subagent", "jobs", id, "state.json");
+    const raw = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+    assert.equal(raw.status, "cancelling");
+    assert.equal(raw.callStates[0].phase, "cancelled");
+    assert.equal(raw.callStates[0].completedAt, 12345);
+  } finally {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(null);
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("persistBackgroundJob does not throw when persistence is disabled", async () => {
+  const mod = await import("../background-jobs.ts");
+  mod.clearBackgroundJobs();
+  mod.setJobStoreBaseDir(null);
+
+  const job = {
+    id: mod.generateJobId(),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    status: "running",
+    calls: [],
+    callStates: [{ phase: "queued", toolCalls: 0, recentActivity: [] }],
+    promise: Promise.resolve(),
+    onComplete: "trigger",
+  };
+
+  assert.doesNotThrow(() => mod.persistBackgroundJob(job));
+});
+
+test("persistBackgroundJob persists mutated worktree metadata", async () => {
+  const mod = await import("../background-jobs.ts");
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-bg-save-worktree-"));
+  try {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(baseDir);
+
+    const id = mod.generateJobId();
+    const job = {
+      id,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      status: "running",
+      calls: [],
+      callStates: [],
+      promise: Promise.resolve(),
+      onComplete: "trigger",
+      worktreeMode: "isolated",
+    };
+    mod.registerBackgroundJob(job);
+
+    job.worktreeMetadata = {
+      path: "/tmp/pi-subagent-worktrees/example",
+      branch: `subagent/${id}`,
+      baseCommit: "abc123def456",
+    };
+    mod.persistBackgroundJob(job);
+
+    const statePath = path.join(baseDir, ".pi-subagent", "jobs", id, "state.json");
+    const raw = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+    assert.equal(raw.worktreeMetadata.path, "/tmp/pi-subagent-worktrees/example");
+    assert.equal(raw.worktreeMetadata.branch, `subagent/${id}`);
+    assert.equal(raw.worktreeMetadata.baseCommit, "abc123def456");
+  } finally {
+    mod.clearBackgroundJobs();
+    mod.setJobStoreBaseDir(null);
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("setBackgroundJobResults persists results", async () => {
   const mod = await import("../background-jobs.ts");
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-bg-results-"));
@@ -1566,21 +1662,28 @@ test("reloadPersistedJobs loads terminal and interrupted jobs", async () => {
     const completed = makeMinimalJobFromStore("reload_completed", "completed");
     const failed = makeMinimalJobFromStore("reload_failed", "failed");
     const running = makeMinimalJobFromStore("reload_running", "running", undefined);
+    const cancelling = makeMinimalJobFromStore("reload_cancelling", "cancelling", undefined);
+    cancelling.callStates = [{ phase: "cancelled", toolCalls: 1, recentActivity: [], completedAt: 12345 }];
 
     storeMod.persistJobState(baseDir, completed);
     storeMod.persistJobState(baseDir, failed);
     storeMod.persistJobState(baseDir, running);
+    storeMod.persistJobState(baseDir, cancelling);
 
     mod.clearBackgroundJobs();
     const count = mod.reloadPersistedJobs();
 
-    // Should have loaded 3 jobs
-    assert.equal(count, 3);
-    assert.equal(mod.getTotalJobCount(), 3);
+    // Should have loaded 4 jobs
+    assert.equal(count, 4);
+    assert.equal(mod.getTotalJobCount(), 4);
 
     // Running job should be interrupted
     const interrupted = mod.getBackgroundJob("reload_running");
     assert.equal(interrupted.status, "interrupted");
+
+    // Confirmed cancelling job should reload as cancelled
+    const cancelled = mod.getBackgroundJob("reload_cancelling");
+    assert.equal(cancelled.status, "cancelled");
 
     // Completed/failed should keep their status
     assert.equal(mod.getBackgroundJob("reload_completed").status, "completed");

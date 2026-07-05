@@ -278,7 +278,7 @@ test("loadPersistedJobs upgrades running jobs to interrupted", () => {
   }
 });
 
-test("loadPersistedJobs upgrades cancelling jobs to interrupted", () => {
+test("loadPersistedJobs upgrades ambiguous cancelling jobs to interrupted", () => {
   const baseDir = createTempBase();
   try {
     const cancelling = makeMinimalJob("subjob_cancelling_001", "cancelling", {
@@ -291,6 +291,28 @@ test("loadPersistedJobs upgrades cancelling jobs to interrupted", () => {
     assert.equal(jobs.length, 1);
     assert.equal(jobs[0].id, "subjob_cancelling_001");
     assert.equal(jobs[0].status, "interrupted");
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("loadPersistedJobs reloads confirmed cancelling jobs as cancelled", () => {
+  const baseDir = createTempBase();
+  try {
+    const cancelling = makeMinimalJob("subjob_cancelling_cancelled_001", "cancelling", {
+      results: undefined,
+      callStates: [
+        { phase: "cancelled", toolCalls: 1, recentActivity: [], completedAt: 12345 },
+        { phase: "completed", toolCalls: 2, recentActivity: [], completedAt: 12000 },
+      ],
+    });
+    storeModule.persistJobState(baseDir, cancelling);
+
+    const jobs = storeModule.loadPersistedJobs(baseDir);
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0].id, "subjob_cancelling_cancelled_001");
+    assert.equal(jobs[0].status, "cancelled");
+    assert.equal(jobs[0].callStates[0].phase, "cancelled");
   } finally {
     fs.rmSync(baseDir, { recursive: true, force: true });
   }

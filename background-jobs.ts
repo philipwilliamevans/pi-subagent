@@ -70,6 +70,17 @@ function persistJobIfEnabled(job: BackgroundJob): void {
   }
 }
 
+/**
+ * Persist a job's current full state after direct in-memory mutations.
+ *
+ * Use this when code updates nested fields such as callStates,
+ * worktreeMetadata, or error without going through a specific registry
+ * mutation helper.
+ */
+export function persistBackgroundJob(job: BackgroundJob): void {
+  persistJobIfEnabled(job);
+}
+
 // ---------------------------------------------------------------------------
 // Startup / reload
 // ---------------------------------------------------------------------------

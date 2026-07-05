@@ -39,8 +39,11 @@ The main path is:
 | Child process runtime | [`runner.ts`](runner.ts) | Temp prompt/session files, CLI argument construction, process spawning, streaming updates, abort handling |
 | Event parsing | [`runner-events.js`](runner-events.js) | Pi JSON event parsing, assistant message deduplication, final text/error summaries |
 | Shared state model | [`types.ts`](types.ts) | Normalized calls, result shape, usage aggregation, success/error semantics |
-| Background registry | [`background-jobs.ts`](background-jobs.ts) | In-memory job registration, lookup, status counts, ID generation, optional disk persistence |
+| Background registry | [`background-jobs.ts`](background-jobs.ts) | Live in-memory job registry, job mutation helpers, active counts, ID generation, optional disk persistence |
 | Background job store | [`background-job-store.ts`](background-job-store.ts) | Durable persistence for background job state (atomic writes, load/save/delete) |
+| Background activity | [`background-activity.ts`](background-activity.ts) | Deduplicated recent activity tracking from streamed partial results |
+| Background lifecycle | [`background-lifecycle.ts`](background-lifecycle.ts) | Cancellation-safe per-call lifecycle transitions |
+| Isolated worktrees | [`worktree.ts`](worktree.ts) | Git worktree creation, changed-file detection, and patch artifact generation |
 | Session locking | [`session-lock.ts`](session-lock.ts) | Filesystem locks for named persistent subagent sessions |
 | Session paths | [`session-paths.ts`](session-paths.ts) | Default Pi session directory derivation and creation |
 | TUI rendering | [`render.ts`](render.ts) | Collapsed and expanded displays for foreground and background tools |
@@ -66,9 +69,13 @@ Named subagent session IDs are derived from parent session ID, effective cwd, ag
 
 ### Background jobs are durable
 
-Background jobs are persisted to `.pi-subagent/jobs/<jobId>/` via [`background-job-store.ts`](background-job-store.ts). Terminal jobs (completed, failed, cancelled, interrupted) survive parent process restarts and can still be inspected via `subagent_status` and `subagent_result`. Jobs that were running or cancelling when the process exited are reloaded with status `interrupted`.
+Background jobs have a live in-memory registry and an optional disk-backed store under `.pi-subagent/jobs/<jobId>/` via [`background-job-store.ts`](background-job-store.ts). Terminal jobs (completed, failed, cancelled, interrupted) survive parent process restarts and can still be inspected via `subagent_status` and `subagent_result`. Jobs that were running when the process exited are reloaded with status `interrupted`; jobs that were cancelling are only reloaded as `cancelled` when their persisted call states already prove cancellation completed.
 
 Persistence uses atomic writes (write to temp file, then rename) and excludes unserializable fields (promise, abortController, live callbacks).
+
+### Isolated worktrees are optional and job-scoped
+
+Background jobs default to the parent working tree. With `worktreeMode: "isolated"`, the extension creates one git worktree for the whole job, runs every call in that worktree, records changed files, and writes a `worktree.patch` artifact when changes exist. Multi-call isolated jobs still share that one isolated worktree.
 
 ## High-level data flow
 
@@ -90,7 +97,7 @@ User request
 - Background jobs are root-session-only, accept no persistent sessions, do not support `initialContext: "parent"` yet, and are limited to 2 active jobs with 2 calls running concurrently per job.
 - Delegation defaults to max depth 3 and cycle prevention enabled.
 - Named sessions require a persisted parent Pi session and are blocked from temporary parent-seeded subagent sessions.
-- Background jobs can run in the parent working tree or in a job-level isolated worktree. A multi-call isolated job currently shares one isolated worktree across its calls.
+- Background jobs can run in the parent working tree or in a job-level isolated worktree. Isolated mode requires a clean git worktree and a named branch.
 - Session locks are filesystem directories with heartbeat metadata, not OS-level advisory locks.
 
 ## Where to start for changes
@@ -98,5 +105,5 @@ User request
 - To change the public API or prompt guidance, start in [`contract.ts`](contract.ts), then update schema handling in [`index.ts`](index.ts).
 - To change process behavior, start in [`runner.ts`](runner.ts) and check [`runner-cli.js`](runner-cli.js).
 - To change named session behavior, review [`index.ts`](index.ts), [`session-lock.ts`](session-lock.ts), and [`session-paths.ts`](session-paths.ts) together.
-- To change background execution, review [`index.ts`](index.ts), [`background-jobs.ts`](background-jobs.ts), [`types.ts`](types.ts), and the background rendering helpers in [`render.ts`](render.ts).
+- To change background execution, review [`index.ts`](index.ts), [`background-jobs.ts`](background-jobs.ts), [`background-job-store.ts`](background-job-store.ts), [`background-activity.ts`](background-activity.ts), [`background-lifecycle.ts`](background-lifecycle.ts), [`worktree.ts`](worktree.ts), [`types.ts`](types.ts), and the background rendering helpers in [`render.ts`](render.ts).
 - To change user-visible TUI output, change [`render.ts`](render.ts) and keep result shape compatibility with [`types.ts`](types.ts).

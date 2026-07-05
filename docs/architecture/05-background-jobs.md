@@ -4,7 +4,7 @@ Background jobs allow the parent agent to start subagent work and continue immed
 
 ## Registry
 
-[`background-jobs.ts`](../../background-jobs.ts) stores jobs in a process-local `Map<string, BackgroundJob>`.
+[`background-jobs.ts`](../../background-jobs.ts) stores live jobs in a process-local `Map<string, BackgroundJob>` and persists mutations when a job store base directory has been configured.
 
 Properties:
 
@@ -15,9 +15,9 @@ Properties:
 
 ## Durable persistence
 
-When a base directory is configured (via `setJobStoreBaseDir(cwd)`), every state transition is persisted to `.pi-subagent/jobs/<jobId>/state.json` using atomic writes via [`background-job-store.ts`](../../background-job-store.ts). On startup, `reloadPersistedJobs()` loads all terminal jobs from disk into the in-memory registry.
+When a base directory is configured (via `setJobStoreBaseDir(cwd)`), state transitions are persisted to `.pi-subagent/jobs/<jobId>/state.json` using atomic writes via [`background-job-store.ts`](../../background-job-store.ts). On startup, `reloadPersistedJobs()` loads persisted jobs from disk into the in-memory registry.
 
-Jobs that were `running` or `cancelling` when the process exited are reloaded with status `interrupted`. Unserializable fields (promise, abortController, live callbacks) are excluded from the persisted state.
+Jobs that were `running` when the process exited are reloaded with status `interrupted`. Jobs that were `cancelling` are reloaded as `cancelled` only when the persisted call states show cancellation had already reached unfinished calls; otherwise they become `interrupted`. Unserializable fields (promise, abortController, live callbacks) are excluded from the persisted state.
 
 ## Job model
 
@@ -32,8 +32,11 @@ Jobs that were `running` or `cancelling` when the process exited are reloaded wi
 - `onComplete`
 - `AbortController`
 - the running `promise`
+- optional `worktreeMode`
+- optional `worktreeScope`
+- optional `worktreeMetadata`
 
-Per-call state tracks phase, timestamps, tool call count, and recent activity.
+Per-call state tracks phase, timestamps, tool call count, recent activity, and an activity cursor used to avoid replaying duplicate tool-call activity from partial updates.
 
 ## Start restrictions
 
@@ -44,12 +47,15 @@ Per-call state tracks phase, timestamps, tool call count, and recent activity.
 - It does not support `initialContext: "parent"` yet.
 - It is subject to the active job limit.
 - It still uses the normal cycle guard.
+- For `worktreeMode: "isolated"`, cwd must be inside a clean git repository on a named branch.
 
-The child processes still run in the same working tree, so background agents can race with the parent or with each other if prompts do not use disjoint scopes.
+In shared mode, child processes run in the parent working tree and can race with the parent or with each other if prompts do not use disjoint scopes. In isolated mode, the job is isolated from the parent working tree, but sibling calls inside the same job still share one isolated worktree.
 
 ## Execution
 
 `runBackgroundSubagentJob` executes calls with concurrency 2 through the same `runAgent` path used by foreground calls.
+
+For `worktreeMode: "isolated"`, execution first creates a git worktree under a sibling `.pi-worktrees/<project-slug>/<jobId>` directory using a branch named `codex/subjob_<jobId>`. Calls run in that worktree. After completion, the extension records changed files and writes `.pi-subagent/jobs/<jobId>/worktree.patch` when there are changes.
 
 Streaming partial updates are captured into per-call lifecycle state:
 - tool call counts
@@ -82,8 +88,9 @@ Completion messages use `formatBackgroundCompletion` from [`render.ts`](../../re
 On confirmed cancellation:
 
 1. Job status becomes `cancelling`.
-2. The job `AbortController` is aborted.
-3. Each running child process receives termination through `runAgent`.
-4. When the job settles, status becomes `cancelled`.
-5. A completion/cancellation message is posted unless completion mode is silent.
-
+2. Pending, spawning, and running call states are immediately marked `cancelled`.
+3. The updated job state is persisted.
+4. The job `AbortController` is aborted.
+5. Each running child process receives termination through `runAgent`.
+6. When the job settles, status becomes `cancelled`.
+7. A completion/cancellation message is posted unless completion mode is silent.

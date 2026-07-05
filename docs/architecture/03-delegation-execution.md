@@ -28,6 +28,8 @@ The foreground call limit is 8.
 
 `executeCalls` maintains placeholder results for running calls and emits heartbeat updates every second while work is still active.
 
+Background calls use the same `runAgent` primitive. In shared mode they run in each call's effective cwd. In isolated mode every call in the job runs in the same job-level git worktree.
+
 ## Child process creation
 
 `runAgent` builds and starts a child process equivalent to:
@@ -83,4 +85,3 @@ This keeps child Pi invocations aligned with the parent without forwarding flags
 - For non-persistent sessions, an `agent_end` event with assistant output is treated as semantic completion after a short grace period, then the child is terminated to avoid waiting on extra process shutdown.
 
 Named persistent sessions are allowed to exit naturally so their session files can flush. If they do not exit within 30 seconds after semantic completion, the process is terminated and marked as a process error.
-

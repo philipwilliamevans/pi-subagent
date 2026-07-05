@@ -17,6 +17,7 @@ This file captures the non-obvious constraints that matter when maintaining or e
 | Persistent session post-completion exit timeout | 30000 ms | `PERSISTENT_SESSION_EXIT_TIMEOUT_MS` in [`runner.ts`](../../runner.ts) |
 | Session lock heartbeat | 30000 ms | [`session-lock.ts`](../../session-lock.ts) |
 | Stale lock threshold | 2 minutes | [`session-lock.ts`](../../session-lock.ts) |
+| `subagent_result.maxOutputLength` | 50000 chars | `MAX_OUTPUT_LENGTH_LIMIT` in [`types.ts`](../../types.ts) |
 
 ## Delegation guard configuration
 
@@ -33,11 +34,19 @@ Depth is propagated to children through environment variables. Cycle prevention 
 
 ### Background jobs are durable, but active jobs are not resumed
 
-Terminal background jobs are persisted to disk and reloaded on startup. Jobs that were `running` or `cancelling` when the extension process exited are reloaded as `interrupted`; child processes are not resumed.
+Terminal background jobs are persisted to disk and reloaded on startup. Jobs that were `running` when the extension process exited are reloaded as `interrupted`; child processes are not resumed.
+
+A cancelling job can reload as `cancelled` only if persisted call state already shows cancellation had been applied. Otherwise it reloads as `interrupted` to avoid pretending the process completed cleanly.
 
 ### Isolated worktree mode is job-level
 
 `worktreeMode: "isolated"` creates one isolated worktree for the background job. Multiple calls inside that job share the same isolated worktree, so sibling write-capable calls can still conflict with each other.
+
+Isolated worktree mode also requires a clean git working tree and a named branch before job start. The extension creates a branch named `codex/subjob_<jobId>` and stores changed-file metadata plus a patch artifact when possible.
+
+### Shared worktree mode remains the default
+
+Background jobs default to `worktreeMode: "shared"`, which means child processes can edit the parent working tree while the parent or sibling jobs are also active. The extension warns and records optional `worktreeScope`, but it does not enforce file-level locking.
 
 ### Session locks are advisory
 
@@ -63,4 +72,5 @@ Before changing architecture-sensitive code:
 2. Add or adjust tests for process arguments, result normalization, and rendering when relevant.
 3. Confirm persistent session changes handle duplicate calls, active calls, filesystem locks, and custom session directories.
 4. Confirm background job changes handle status, cancellation, completion delivery, and `subagent_result`.
-5. Keep generated package contents in sync with `package.json.files` if new runtime files are needed in the npm package.
+5. Confirm isolated worktree changes handle git preconditions, metadata collection, patch artifacts, and multi-call job behavior.
+6. Keep generated package contents in sync with `package.json.files` if new runtime files are needed in the npm package.
