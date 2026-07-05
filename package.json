@@ -19,6 +19,7 @@
     "session-paths.ts",
     "render.ts",
     "types.ts",
+    "worktree.ts",
     "agents/*.md",
     "README.md",
     "LICENSE"

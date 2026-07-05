@@ -74,6 +74,7 @@ export interface WorktreeMetadata {
 	branch: string;
 	baseCommit: string;
 	changedFiles?: string[];
+	patchPath?: string;
 }
 
 /** In-memory background job tracking entry. */

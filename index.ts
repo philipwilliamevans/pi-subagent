@@ -63,6 +63,12 @@ import { getResultSummaryText } from "./runner-events.js";
 import { mapConcurrent, runAgent } from "./runner.js";
 import { acquireSessionLocks, releaseSessionLocks, type SessionLockTarget } from "./session-lock.js";
 import {
+  createWorktree,
+  createWorktreePatch,
+  getRepoRoot,
+  getWorktreeChangedFiles,
+} from "./worktree.js";
+import {
   type BackgroundCompletionMode,
   type BackgroundJob,
   type CallState,
@@ -1559,7 +1565,23 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
     defaultCwd: string,
     makeDetails: ReturnType<typeof makeDetailsFactory>,
   ): Promise<void> {
+    if (job.worktreeMode === "isolated") {
+      try {
+        job.worktreeMetadata = createWorktree(defaultCwd, job.id);
+        job.updatedAt = Date.now();
+      } catch (error) {
+        job.status = "failed";
+        job.updatedAt = Date.now();
+        job.error = error instanceof Error ? error.message : String(error);
+        updateBackgroundJobStatus(job.id, "failed");
+        setBackgroundJobResults(job.id, []);
+        postCompletionMessage(job);
+        return;
+      }
+    }
+
     try {
+      const worktreeCwd = job.worktreeMetadata?.path;
       const results = await mapConcurrent(
         job.calls,
         MAX_BACKGROUND_CONCURRENCY,
@@ -1576,7 +1598,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
             agentName: call.agent,
             prompt: call.prompt,
             callModel: call.model,
-            callCwd: call.effectiveCwd,
+            callCwd: worktreeCwd ?? call.effectiveCwd,
             initialContext: call.initialContext,
             parentSessionSnapshotJsonl: undefined,
             session: undefined,
@@ -1610,6 +1632,34 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       }
       job.results = results;
       job.updatedAt = Date.now();
+
+      if (job.worktreeMode === "isolated" && job.worktreeMetadata) {
+        try {
+          const changedFiles = getWorktreeChangedFiles(job.worktreeMetadata.path);
+          job.worktreeMetadata.changedFiles = changedFiles;
+          if (changedFiles.length > 0) {
+            const patchPath = createWorktreePatch(
+              job.worktreeMetadata.path,
+              job.worktreeMetadata.baseCommit,
+              path.join(
+                getRepoRoot(defaultCwd),
+                ".pi-subagent",
+                "jobs",
+                job.id,
+                "worktree.patch",
+              ),
+            );
+            if (patchPath) job.worktreeMetadata.patchPath = patchPath;
+          }
+          job.updatedAt = Date.now();
+        } catch (error) {
+          console.warn(
+            `[pi-subagent] Failed to collect worktree metadata for job "${job.id}": ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
 
       // Persist state and result artifact.
       updateBackgroundJobStatus(job.id, job.status as any);

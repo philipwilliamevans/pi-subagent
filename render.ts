@@ -404,6 +404,7 @@ export function formatBackgroundCompletion(job: BackgroundJob): string {
 
 	const lines: string[] = [
 		`${verb} \`${job.id}\` ${statusLabel}${durationLine}${worktreeSuffix}.`,
+		...formatWorktreeMetadataLines(job),
 		"",
 	];
 
@@ -492,6 +493,25 @@ function formatWorktreeScopeLine(job: BackgroundJob): string {
 	return `\n  Scope: ${job.worktreeScope}`;
 }
 
+function formatWorktreeMetadataLines(job: BackgroundJob): string[] {
+	const metadata = job.worktreeMetadata;
+	if (!metadata) return [];
+	const lines = [
+		`  Worktree: ${metadata.path}`,
+		`  Branch: ${metadata.branch}`,
+		`  Base: ${metadata.baseCommit}`,
+	];
+	if (metadata.changedFiles && metadata.changedFiles.length > 0) {
+		const shown = metadata.changedFiles.slice(0, 10);
+		const suffix = metadata.changedFiles.length > shown.length
+			? `, ... +${metadata.changedFiles.length - shown.length} more`
+			: "";
+		lines.push(`  Changed files: ${shown.join(", ")}${suffix}`);
+	}
+	if (metadata.patchPath) lines.push(`  Patch: ${metadata.patchPath}`);
+	return lines;
+}
+
 export function formatJobStatus(job: BackgroundJob): string {
 	const age = job.createdAt ? formatAge(job.createdAt) : "";
 	const duration = job.results ? formatElapsed(job.createdAt, job.updatedAt) : "";
@@ -515,6 +535,7 @@ export function formatJobStatus(job: BackgroundJob): string {
 
 	return [
 		`${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}${worktreeSuffix}${scopeLine}`,
+		...formatWorktreeMetadataLines(job),
 		...callLines,
 	].join("\n");
 }
