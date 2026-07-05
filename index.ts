@@ -54,7 +54,10 @@ import {
   renderSubagentResultResult,
 } from "./render.js";
 import { updateCallStateFromPartial } from "./background-activity.js";
-import { finishCallState } from "./background-lifecycle.js";
+import {
+  markPendingCallsCancelled,
+  finishCallState,
+} from "./background-lifecycle.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
 import { getResultSummaryText } from "./runner-events.js";
 import { mapConcurrent, runAgent } from "./runner.js";
@@ -1252,7 +1255,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         // Proceed with cancellation
         job.status = "cancelling";
         job.updatedAt = Date.now();
-
+        markPendingCallsCancelled(job, Date.now());
         job.abortController?.abort();
 
         return {
