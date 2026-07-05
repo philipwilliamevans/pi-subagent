@@ -170,6 +170,75 @@ test("persistJobState updates existing state", () => {
 });
 
 // ---------------------------------------------------------------------------
+// event journal helpers
+// ---------------------------------------------------------------------------
+
+test("appendJobEventLine creates a per-call event journal", () => {
+  const baseDir = createTempBase();
+  try {
+    storeModule.appendJobEventLine(
+      baseDir,
+      "subjob_events_001",
+      0,
+      JSON.stringify({ type: "turn_start" }),
+    );
+
+    const eventPath = path.join(
+      baseDir,
+      ".pi-subagent",
+      "jobs",
+      "subjob_events_001",
+      "calls",
+      "0",
+      "events.jsonl",
+    );
+    assert.ok(fs.existsSync(eventPath));
+    assert.equal(
+      fs.readFileSync(eventPath, "utf-8"),
+      `${JSON.stringify({ type: "turn_start" })}\n`,
+    );
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("tailJobEventLines returns the latest bounded event lines", () => {
+  const baseDir = createTempBase();
+  try {
+    for (let i = 0; i < 5; i++) {
+      storeModule.appendJobEventLine(
+        baseDir,
+        "subjob_events_002",
+        1,
+        JSON.stringify({ type: "event", index: i }),
+      );
+    }
+
+    const lines = storeModule.tailJobEventLines(
+      baseDir,
+      "subjob_events_002",
+      1,
+      2,
+    );
+    assert.deepEqual(lines.map((line) => JSON.parse(line).index), [3, 4]);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("tailJobEventLines returns empty for missing event journal", () => {
+  const baseDir = createTempBase();
+  try {
+    assert.deepEqual(
+      storeModule.tailJobEventLines(baseDir, "subjob_missing_events", 0, 20),
+      [],
+    );
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // loadPersistedJob
 // ---------------------------------------------------------------------------
 

@@ -36,6 +36,8 @@ import type {
 const JOBS_DIR_NAME = "jobs";
 const STATE_FILE = "state.json";
 const RESULT_FILE = "result.md";
+const CALLS_DIR_NAME = "calls";
+const EVENTS_FILE = "events.jsonl";
 
 const CURRENT_SCHEMA_VERSION = 1;
 
@@ -89,6 +91,24 @@ function getStatePath(baseDir: string, jobId: string): string {
  */
 function getResultPath(baseDir: string, jobId: string): string {
   return path.join(getJobDir(baseDir, jobId), RESULT_FILE);
+}
+
+/**
+ * Return the directory path for a single call's persisted artifacts.
+ */
+function getCallDir(baseDir: string, jobId: string, callIndex: number): string {
+  return path.join(getJobDir(baseDir, jobId), CALLS_DIR_NAME, String(callIndex));
+}
+
+/**
+ * Return the raw event journal path for a single background call.
+ */
+export function getJobEventPath(
+  baseDir: string,
+  jobId: string,
+  callIndex: number,
+): string {
+  return path.join(getCallDir(baseDir, jobId, callIndex), EVENTS_FILE);
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +232,40 @@ export function persistJobResult(
 
   fs.writeFileSync(tmpPath, resultText, "utf-8");
   fs.renameSync(tmpPath, getResultPath(baseDir, jobId));
+}
+
+/**
+ * Append one raw child Pi JSON event line to a call's event journal.
+ */
+export function appendJobEventLine(
+  baseDir: string,
+  jobId: string,
+  callIndex: number,
+  rawLine: string,
+): void {
+  const callDir = getCallDir(baseDir, jobId, callIndex);
+  fs.mkdirSync(callDir, { recursive: true });
+  fs.appendFileSync(getJobEventPath(baseDir, jobId, callIndex), `${rawLine}\n`, "utf-8");
+}
+
+/**
+ * Read the latest event lines for a call. Missing journals return an empty list.
+ */
+export function tailJobEventLines(
+  baseDir: string,
+  jobId: string,
+  callIndex: number,
+  maxEvents: number,
+): string[] {
+  const eventPath = getJobEventPath(baseDir, jobId, callIndex);
+  try {
+    if (!fs.existsSync(eventPath)) return [];
+    const raw = fs.readFileSync(eventPath, "utf-8");
+    const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    return lines.slice(-maxEvents);
+  } catch {
+    return [];
+  }
 }
 
 /**

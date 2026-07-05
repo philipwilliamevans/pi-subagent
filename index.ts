@@ -27,11 +27,14 @@ import {
   setBackgroundJobResults,
   persistJobResultArtifact,
   persistBackgroundJob,
+  appendBackgroundJobEventLine,
+  readBackgroundJobEventLines,
 } from "./background-jobs.js";
 import {
   CALLS_SCHEMA_DESCRIPTION,
   formatAvailableSubagentsPrompt,
   formatSubagentCancelToolDescription,
+  formatSubagentPeekToolDescription,
   formatSubagentResultToolDescription,
   formatSubagentStartToolDescription,
   formatSubagentStatusToolDescription,
@@ -41,6 +44,7 @@ import {
 } from "./contract.js";
 import {
   formatBackgroundCompletion,
+  formatJobPeek,
   formatJobList,
   formatJobResults,
   formatJobStatus,
@@ -51,6 +55,8 @@ import {
   renderCancelResult,
   renderJobStatusCall,
   renderJobStatusResult,
+  renderSubagentPeekCall,
+  renderSubagentPeekResult,
   renderResult,
   renderSubagentResultCall,
   renderSubagentResultResult,
@@ -85,6 +91,7 @@ import {
   isResultError,
   isResultSuccess,
   validateCallIndex,
+  validateMaxEvents,
   validateMaxOutputLength,
 } from "./types.js";
 
@@ -178,6 +185,32 @@ const SubagentStatusParams = Type.Object({
   jobId: Type.Optional(
     Type.String({
       description: "Job ID to inspect. Omit to list all jobs.",
+    }),
+  ),
+});
+
+const SubagentPeekParams = Type.Object({
+  jobId: Type.String({
+    description: "ID of the background job to peek.",
+  }),
+  callIndex: Type.Optional(
+    Type.Integer({
+      description: "0-based index of a specific call to peek. Omit to peek all calls.",
+      minimum: 0,
+    }),
+  ),
+  maxEvents: Type.Optional(
+    Type.Integer({
+      description: "Maximum raw events to read per call (1–200). Default: 20.",
+      minimum: 1,
+      maximum: 200,
+      default: 20,
+    }),
+  ),
+  includeRawEvents: Type.Optional(
+    Type.Boolean({
+      description: "When true, include the raw JSON event tail. Default: false.",
+      default: false,
     }),
   ),
 });
@@ -1227,6 +1260,72 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
     });
 
     // -----------------------------------------------------------------------
+    // subagent_peek — inspect raw background event journals
+    // -----------------------------------------------------------------------
+
+    pi.registerTool({
+      name: "subagent_peek",
+      label: "Peek background subagent",
+      description: formatSubagentPeekToolDescription(),
+      parameters: SubagentPeekParams,
+
+      async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+        const job = getBackgroundJob(params.jobId);
+        if (!job) {
+          const ids = getAllBackgroundJobs().map((j) => `  ${j.id} (${j.status})`).join("\n");
+          const hint = ids ? `Known jobs:\n${ids}` : "No background subagent jobs.";
+          return {
+            content: [{ type: "text", text: `Unknown background job: \`${params.jobId}\`.\n${hint}` }],
+            isError: true,
+          };
+        }
+
+        const callIndex = params.callIndex;
+        const callIndexError = validateCallIndex(callIndex, job.calls.length - 1);
+        if (callIndexError) {
+          return {
+            content: [{ type: "text", text: callIndexError }],
+            isError: true,
+          };
+        }
+
+        const maxEvents = params.maxEvents ?? 20;
+        const maxEventsError = validateMaxEvents(maxEvents);
+        if (maxEventsError) {
+          return {
+            content: [{ type: "text", text: maxEventsError }],
+            isError: true,
+          };
+        }
+
+        const indices = callIndex !== undefined
+          ? [callIndex]
+          : job.calls.map((_call, index) => index);
+        const eventLinesByCall = indices.map((index) => ({
+          callIndex: index,
+          lines: readBackgroundJobEventLines(job.id, index, maxEvents),
+        }));
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: formatJobPeek(job, {
+                callIndex,
+                eventLinesByCall,
+                includeRawEvents: params.includeRawEvents ?? false,
+              }),
+            },
+          ],
+        };
+      },
+
+      renderCall: (args, theme) => renderSubagentPeekCall(args, theme),
+      renderResult: (result, { expanded }, theme) =>
+        renderSubagentPeekResult(result, expanded, theme),
+    });
+
+    // -----------------------------------------------------------------------
     // subagent_cancel — terminate a running background job
     // -----------------------------------------------------------------------
 
@@ -1626,6 +1725,9 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
               if (details?.results?.[0]) {
                 updateCallStateFromPartial(cs, details.results[0]);
               }
+            },
+            onEvent: (_event, rawLine) => {
+              appendBackgroundJobEventLine(job.id, index, rawLine);
             },
             makeDetails,
           });

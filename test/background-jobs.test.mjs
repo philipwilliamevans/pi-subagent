@@ -323,6 +323,103 @@ test("formatJobStatus shows cancelling job", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// FormatJobPeek
+// ---------------------------------------------------------------------------
+
+test("formatJobPeek reports no events yet for a running call", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobPeek } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_peek_empty",
+      createdAt: Date.now() - 5000,
+      updatedAt: Date.now() - 5000,
+      status: "running",
+      calls: [{ index: 0, agent: "explorer", prompt: "Explore", effectiveCwd: "/tmp", initialContext: "empty" }],
+      callStates: [{ phase: "running", startedAt: Date.now() - 4000, toolCalls: 0, recentActivity: [] }],
+    };
+
+    const text = formatJobPeek(job, {
+      eventLinesByCall: [{ callIndex: 0, lines: [] }],
+    });
+
+    assert.match(text, /subjob_peek_empty/);
+    assert.match(text, /Call 0: explorer — running/);
+    assert.match(text, /Events: no events yet/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobPeek summarizes tool events and assistant excerpts", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobPeek } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_peek_events",
+      createdAt: Date.now() - 12000,
+      updatedAt: Date.now(),
+      status: "running",
+      calls: [{ index: 0, agent: "explorer", prompt: "Explore files", effectiveCwd: "/tmp", initialContext: "empty" }],
+      callStates: [{ phase: "running", startedAt: Date.now() - 10000, toolCalls: 1, recentActivity: [] }],
+    };
+    const eventLines = [
+      JSON.stringify({ type: "turn_start" }),
+      JSON.stringify({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read", args: { path: "/tmp/a.ts" } }),
+      JSON.stringify({
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "I found the interesting file." }],
+        },
+      }),
+      JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "read", isError: false, result: { output: "ok" } }),
+    ];
+
+    const text = formatJobPeek(job, {
+      eventLinesByCall: [{ callIndex: 0, lines: eventLines }],
+    });
+
+    assert.match(text, /Tool: read \(completed\)/);
+    assert.match(text, /Assistant excerpt:/);
+    assert.match(text, /I found the interesting file/);
+    assert.match(text, /turn_start -> tool_execution_start -> message_update -> tool_execution_end/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobPeek can include raw event tails", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobPeek } = await import(moduleUrl);
+
+    const raw = JSON.stringify({ type: "agent_end", messages: [] });
+    const job = {
+      id: "subjob_peek_raw",
+      createdAt: Date.now() - 1000,
+      updatedAt: Date.now(),
+      status: "completed",
+      calls: [{ index: 0, agent: "explorer", prompt: "Explore", effectiveCwd: "/tmp", initialContext: "empty" }],
+      callStates: [{ phase: "completed", startedAt: Date.now() - 1000, completedAt: Date.now(), toolCalls: 0, recentActivity: [] }],
+      results: [],
+    };
+
+    const text = formatJobPeek(job, {
+      eventLinesByCall: [{ callIndex: 0, lines: [raw] }],
+      includeRawEvents: true,
+    });
+
+    assert.match(text, /Raw events:/);
+    assert.match(text, /"agent_end"/);
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // FormatJobList
 // ---------------------------------------------------------------------------
 
@@ -802,6 +899,52 @@ test("formatJobResults includes tool calls when requested", async () => {
     const textWith = formatJobResults(job, { includeToolCalls: true });
     assert.match(textWith, /### Tool calls/);
     assert.match(textWith, /grep/);
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Render for subagent_peek
+// ---------------------------------------------------------------------------
+
+test("renderSubagentPeekCall shows jobId and callIndex", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { renderSubagentPeekCall } = await import(moduleUrl);
+
+    const component = renderSubagentPeekCall({ jobId: "subjob_abc123", callIndex: 0 }, theme);
+    assert.match(collectText(component).join(" "), /subagent_peek.*subjob_abc123.*call=0/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("renderSubagentPeekResult shows peek content", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { renderSubagentPeekResult } = await import(moduleUrl);
+
+    const component = renderSubagentPeekResult(
+      { content: [{ type: "text", text: "subjob_abc123: running\n\nRecent events: turn_start" }], details: {} },
+      false, theme,
+    );
+    const text = collectText(component).join(" ");
+    assert.match(text, /subagent_peek/);
+    assert.match(text, /events/);
+    assert.match(text, /Recent events/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("renderSubagentPeekResult handles empty content", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { renderSubagentPeekResult } = await import(moduleUrl);
+
+    const component = renderSubagentPeekResult({ content: [], details: {} }, false, theme);
+    assert.match(collectText(component).join(" "), /no peek data/);
   } finally {
     cleanup();
   }

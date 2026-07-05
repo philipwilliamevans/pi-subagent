@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   validateCallIndex,
+  validateMaxEvents,
   validateMaxOutputLength,
+  MAX_PEEK_EVENTS_LIMIT,
   MAX_OUTPUT_LENGTH_LIMIT,
 } from "../types.ts";
 
@@ -113,4 +115,26 @@ test("validateMaxOutputLength rejects string", () => {
   const err = validateMaxOutputLength("100");
   assert.match(err, /Invalid maxOutputLength 100/);
   assert.match(err, /integer from 1 to/);
+});
+
+// ---------------------------------------------------------------------------
+// validateMaxEvents
+// ---------------------------------------------------------------------------
+
+test("validateMaxEvents returns null for undefined and valid integer", () => {
+  assert.equal(validateMaxEvents(undefined), null);
+  assert.equal(validateMaxEvents(1), null);
+  assert.equal(validateMaxEvents(20), null);
+  assert.equal(validateMaxEvents(MAX_PEEK_EVENTS_LIMIT), null);
+});
+
+test("validateMaxEvents rejects invalid values", () => {
+  assert.match(validateMaxEvents(0), /Invalid maxEvents 0/);
+  assert.match(validateMaxEvents(-1), /Invalid maxEvents -1/);
+  assert.match(validateMaxEvents(1.5), /Invalid maxEvents 1\.5/);
+  assert.match(validateMaxEvents("20"), /Invalid maxEvents 20/);
+  assert.match(
+    validateMaxEvents(MAX_PEEK_EVENTS_LIMIT + 1),
+    new RegExp(`Invalid maxEvents ${MAX_PEEK_EVENTS_LIMIT + 1}`),
+  );
 });

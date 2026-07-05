@@ -165,6 +165,8 @@ The tool returns immediately; results arrive via an auto-injected message.
 By default the completion auto-triggers a parent turn — just omit \`onComplete\`.
 
 Check status anytime with \`subagent_status\` (omit \`jobId\` to list all).
+Peek at live activity with \`subagent_peek\` when you need to see what a
+running background subagent is currently doing.
 Cancel a running job with \`subagent_cancel\` (requires \`confirm: true\`).
 
 Retrieve the full output from a completed job using \`subagent_result\`.
@@ -266,6 +268,24 @@ export function formatSubagentStatusToolDescription(): string {
     "Examples:",
     '  { "jobId": "subjob_abc123" }',
     '  {}',
+  ].join("\n");
+}
+
+export function formatSubagentPeekToolDescription(): string {
+  return [
+    "Peek at recent live activity from a background subagent job.",
+    "",
+    "Reads the raw child Pi event journal captured for each background call.",
+    "Use this while a job is running to inspect current assistant text, tool activity, and recent event types.",
+    "",
+    "Provide `jobId` to inspect a job. Optionally provide `callIndex` for one call.",
+    "Use `maxEvents` to control the event tail size (default 20, max 200).",
+    "Set `includeRawEvents` to true only when you need the raw JSON event tail.",
+    "",
+    "Examples:",
+    '  { "jobId": "subjob_abc123" }',
+    '  { "jobId": "subjob_abc123", "callIndex": 0, "maxEvents": 50 }',
+    '  { "jobId": "subjob_abc123", "includeRawEvents": true }',
   ].join("\n");
 }
 

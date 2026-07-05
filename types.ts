@@ -259,6 +259,9 @@ export function getDisplayItems(messages: Message[]): DisplayItem[] {
 /** Maximum allowed value for maxOutputLength in subagent_result. */
 export const MAX_OUTPUT_LENGTH_LIMIT = 50000;
 
+/** Maximum number of raw events returned by subagent_peek. */
+export const MAX_PEEK_EVENTS_LIMIT = 200;
+
 /**
  * Validate callIndex for subagent_result.
  * Returns an error message string if invalid, or null if valid/absent.
@@ -282,6 +285,18 @@ export function validateMaxOutputLength(value: unknown): string | null {
 	if (value === undefined) return null;
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > MAX_OUTPUT_LENGTH_LIMIT) {
 		return `Invalid maxOutputLength ${String(value)}. Must be an integer from 1 to ${MAX_OUTPUT_LENGTH_LIMIT}.`;
+	}
+	return null;
+}
+
+/**
+ * Validate maxEvents for subagent_peek.
+ * Returns an error message string if invalid, or null if absent.
+ */
+export function validateMaxEvents(value: unknown): string | null {
+	if (value === undefined) return null;
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > MAX_PEEK_EVENTS_LIMIT) {
+		return `Invalid maxEvents ${String(value)}. Must be an integer from 1 to ${MAX_PEEK_EVENTS_LIMIT}.`;
 	}
 	return null;
 }

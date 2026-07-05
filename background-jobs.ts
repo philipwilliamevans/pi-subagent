@@ -16,6 +16,8 @@ import type { BackgroundJob } from "./types.js";
 import {
   persistJobState,
   persistJobResult,
+  appendJobEventLine,
+  tailJobEventLines,
   loadPersistedJobs,
   removePersistedJob,
   listPersistedJobIds,
@@ -205,6 +207,38 @@ export function persistJobResultArtifact(
       }`,
     );
   }
+}
+
+/**
+ * Best-effort append of a raw child Pi event to the persisted job journal.
+ */
+export function appendBackgroundJobEventLine(
+  jobId: string,
+  callIndex: number,
+  rawLine: string,
+): void {
+  if (storeBaseDir === null) return;
+  try {
+    appendJobEventLine(storeBaseDir, jobId, callIndex, rawLine);
+  } catch (error) {
+    console.warn(
+      `[pi-subagent] Failed to append event for job "${jobId}" call ${callIndex}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
+ * Read the latest raw child Pi events for a background call.
+ */
+export function readBackgroundJobEventLines(
+  jobId: string,
+  callIndex: number,
+  maxEvents: number,
+): string[] {
+  if (storeBaseDir === null) return [];
+  return tailJobEventLines(storeBaseDir, jobId, callIndex, maxEvents);
 }
 
 /**

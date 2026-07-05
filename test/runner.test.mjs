@@ -260,6 +260,55 @@ test("runAgent returns immediately when the signal is already aborted", async ()
   }
 });
 
+test("processRunnerJsonLine invokes onEvent for valid JSON and preserves result parsing", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { processRunnerJsonLine } = await import(moduleUrl);
+    const result = makeResult();
+    const seen = [];
+    const rawLine = JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Peekable output." }],
+        timestamp: 1,
+      },
+    });
+
+    const changed = processRunnerJsonLine(rawLine, result, (event, raw) => {
+      seen.push({ event, raw });
+    });
+
+    assert.equal(changed, true);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].event.type, "message_end");
+    assert.equal(seen[0].raw, rawLine);
+    assert.equal(result.messages.length, 1);
+    assert.equal(result.messages[0].content[0].text, "Peekable output.");
+  } finally {
+    cleanup();
+  }
+});
+
+test("processRunnerJsonLine skips onEvent for malformed JSON", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { processRunnerJsonLine } = await import(moduleUrl);
+    const result = makeResult();
+    let eventCount = 0;
+
+    const changed = processRunnerJsonLine("not json", result, () => {
+      eventCount++;
+    });
+
+    assert.equal(changed, false);
+    assert.equal(eventCount, 0);
+    assert.equal(result.messages.length, 0);
+  } finally {
+    cleanup();
+  }
+});
+
 test("buildPiArgs plans ephemeral and persistent session flags", async () => {
   const previousEnv = {};
   for (const key of AGENTFLOW_ENV_VARS) {

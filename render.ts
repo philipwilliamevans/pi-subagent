@@ -662,6 +662,172 @@ export function formatJobResults(
 }
 
 // ---------------------------------------------------------------------------
+// FormatJobPeek — for the subagent_peek tool
+// ---------------------------------------------------------------------------
+
+interface PeekCallEvents {
+	callIndex: number;
+	lines: string[];
+}
+
+interface PeekOptions {
+	callIndex?: number;
+	includeRawEvents?: boolean;
+	eventLinesByCall: PeekCallEvents[];
+}
+
+function parseEventLine(line: string): Record<string, any> | null {
+	try {
+		const parsed = JSON.parse(line);
+		return parsed && typeof parsed === "object" ? parsed as Record<string, any> : null;
+	} catch {
+		return null;
+	}
+}
+
+function extractMessageExcerpt(message: unknown): string {
+	if (!message || typeof message !== "object") return "";
+	const content = (message as { content?: unknown }).content;
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const part of content) {
+		if (!part || typeof part !== "object") continue;
+		const typed = part as { type?: unknown; text?: unknown; thinking?: unknown };
+		if (typed.type === "text" && typeof typed.text === "string" && typed.text.trim()) {
+			parts.push(typed.text.trim());
+		} else if (typed.type === "thinking" && typeof typed.thinking === "string" && typed.thinking.trim()) {
+			parts.push(`Thinking: ${typed.thinking.trim()}`);
+		}
+	}
+	return parts.join("\n\n");
+}
+
+function formatPlainToolArgs(args: unknown): string {
+	if (!args || typeof args !== "object") return "";
+	const obj = args as Record<string, unknown>;
+	const pathArg = obj.path || obj.file_path;
+	if (typeof pathArg === "string" && pathArg.trim()) return shortenPath(pathArg);
+	if (typeof obj.command === "string" && obj.command.trim()) return truncate(oneLine(obj.command), 80);
+	if (typeof obj.pattern === "string" && obj.pattern.trim()) return truncate(oneLine(obj.pattern), 80);
+	const json = JSON.stringify(obj);
+	return json && json !== "{}" ? truncate(json, 80) : "";
+}
+
+function summarizePeekEvents(lines: string[]): {
+	eventTypes: string[];
+	assistantExcerpt: string;
+	toolActivity: string;
+	rawEvents: string[];
+} {
+	const eventTypes: string[] = [];
+	let assistantExcerpt = "";
+	let toolActivity = "";
+	const activeTools = new Map<string, string>();
+
+	for (const line of lines) {
+		const event = parseEventLine(line);
+		if (!event) continue;
+		const type = typeof event.type === "string" ? event.type : "(unknown)";
+		eventTypes.push(type);
+
+		if (type === "message_start" || type === "message_update" || type === "message_end" || type === "turn_end") {
+			const excerpt = extractMessageExcerpt(event.message);
+			if (excerpt) assistantExcerpt = excerpt;
+		} else if (type === "agent_end" && Array.isArray(event.messages)) {
+			for (const message of event.messages) {
+				const excerpt = extractMessageExcerpt(message);
+				if (excerpt) assistantExcerpt = excerpt;
+			}
+		}
+
+		if (type === "tool_execution_start" || type === "tool_execution_update") {
+			const id = typeof event.toolCallId === "string" ? event.toolCallId : `${eventTypes.length}`;
+			const name = typeof event.toolName === "string" ? event.toolName : "tool";
+			const args = formatPlainToolArgs(event.args);
+			const label = args ? `${name} ${args}` : name;
+			activeTools.set(id, label);
+			toolActivity = type === "tool_execution_update" ? `${label} (running, updated)` : `${label} (running)`;
+		} else if (type === "tool_execution_end") {
+			const id = typeof event.toolCallId === "string" ? event.toolCallId : "";
+			const name = typeof event.toolName === "string" ? event.toolName : "tool";
+			if (id) activeTools.delete(id);
+			toolActivity = `${name} (${event.isError ? "failed" : "completed"})`;
+		}
+	}
+
+	if (activeTools.size > 0) {
+		const latest = Array.from(activeTools.values()).at(-1);
+		if (latest) toolActivity = `${latest} (running)`;
+	}
+
+	return {
+		eventTypes: eventTypes.slice(-10),
+		assistantExcerpt: assistantExcerpt ? truncate(assistantExcerpt, 1200) : "",
+		toolActivity,
+		rawEvents: lines,
+	};
+}
+
+export function formatJobPeek(job: BackgroundJob, options: PeekOptions): string {
+	const age = job.createdAt ? formatAge(job.createdAt) : "";
+	const duration = job.results ? formatElapsed(job.createdAt, job.updatedAt) : "";
+	const when = job.status === "running" || job.status === "cancelling"
+		? `started ${age} ago`
+		: job.status === "interrupted"
+			? `interrupted ${age} ago${duration ? ` after ${duration}` : ""}`
+			: `finished ${age} ago${duration ? ` after ${duration}` : ""}`;
+
+	const targetCalls = options.callIndex !== undefined
+		? [{ call: job.calls[options.callIndex], index: options.callIndex }]
+		: job.calls.map((call, index) => ({ call, index }));
+
+	const lines: string[] = [
+		`${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}`,
+	];
+
+	for (const { call, index } of targetCalls) {
+		if (!call) continue;
+		const state = job.callStates?.[index];
+		const events = options.eventLinesByCall.find((entry) => entry.callIndex === index)?.lines ?? [];
+		const summary = summarizePeekEvents(events);
+		const phase = state?.phase ?? formatCallStatusLabel(job.results?.[index]);
+
+		lines.push("");
+		lines.push(`## Call ${index}: ${call.agent} — ${phase}`);
+		lines.push(`Prompt: ${truncate(oneLine(call.prompt), 160)}`);
+		if (state?.startedAt) {
+			const elapsed = state.completedAt
+				? formatDuration(state.completedAt - state.startedAt)
+				: `${formatAge(state.startedAt)} elapsed`;
+			lines.push(`Elapsed: ${elapsed}`);
+		}
+
+		if (events.length === 0) {
+			lines.push("Events: no events yet");
+			continue;
+		}
+
+		if (summary.toolActivity) lines.push(`Tool: ${summary.toolActivity}`);
+		if (summary.assistantExcerpt) {
+			lines.push("");
+			lines.push("Assistant excerpt:");
+			lines.push(summary.assistantExcerpt.replace(/\n/g, "\n  "));
+		}
+
+		lines.push("");
+		lines.push(`Recent events: ${summary.eventTypes.join(" -> ") || "(none)"}`);
+
+		if (options.includeRawEvents) {
+			lines.push("");
+			lines.push("Raw events:");
+			for (const raw of summary.rawEvents) lines.push(raw);
+		}
+	}
+
+	return lines.join("\n").trim();
+}
+
+// ---------------------------------------------------------------------------
 // Render for subagent_start
 // ---------------------------------------------------------------------------
 
@@ -746,6 +912,57 @@ export function renderJobStatusResult(
 	const first = result.content[0];
 	const text = first?.type === "text" && first.text ? first.text : "(no status)";
 	return new Text(text, 0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Render for subagent_peek
+// ---------------------------------------------------------------------------
+
+/**
+ * Render for subagent_peek tool call.
+ */
+export function renderSubagentPeekCall(
+	args: Record<string, any>,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text {
+	const jobId = typeof args.jobId === "string" ? args.jobId : "?";
+	const callIndex = typeof args.callIndex === "number" ? ` call=${args.callIndex}` : "";
+	return new Text(
+		theme.fg("toolTitle", theme.bold("subagent_peek ")) + theme.fg("dim", `${jobId}${callIndex}`),
+		0,
+		0,
+	);
+}
+
+/**
+ * Render for subagent_peek tool result.
+ */
+export function renderSubagentPeekResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+	_expanded: boolean,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Container | Text {
+	const first = result.content[0];
+	const text = first?.type === "text" && first.text ? first.text : "";
+
+	if (!text) {
+		return new Text("(no peek data)", 0, 0);
+	}
+
+	const mdTheme = getMarkdownTheme();
+	const container = new Container();
+	container.addChild(
+		new Text(
+			theme.fg("success", "✓ ") +
+				theme.fg("toolTitle", theme.bold("subagent_peek ")) +
+				theme.fg("muted", "events"),
+			0,
+			0,
+		),
+	);
+	container.addChild(new Spacer(1));
+	container.addChild(new Markdown(text.trim(), 0, 0, mdTheme));
+	return container;
 }
 
 // ---------------------------------------------------------------------------

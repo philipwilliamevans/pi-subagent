@@ -34,6 +34,22 @@ const PI_OFFLINE_ENV = "PI_OFFLINE";
 const PERSISTENT_SESSION_EXIT_TIMEOUT_MS = 30_000;
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
+export type OnEventCallback = (event: unknown, rawLine: string) => void;
+
+export function processRunnerJsonLine(
+  line: string,
+  result: SingleResult,
+  onEvent?: OnEventCallback,
+): boolean {
+  if (onEvent) {
+    try {
+      onEvent(JSON.parse(line), line);
+    } catch {
+      /* ignore non-JSON stdout */
+    }
+  }
+  return processPiJsonLine(line, result);
+}
 
 // ---------------------------------------------------------------------------
 // Process helpers
@@ -224,6 +240,8 @@ export interface RunAgentOptions {
   signal?: AbortSignal;
   /** Streaming update callback. */
   onUpdate?: OnUpdateCallback;
+  /** Raw JSON event callback, invoked for every valid child Pi JSON stdout line. */
+  onEvent?: OnEventCallback;
   /** Factory to wrap results into SubagentDetails. */
   makeDetails: (results: SingleResult[]) => SubagentDetails;
 }
@@ -252,6 +270,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     preventCycles,
     signal,
     onUpdate,
+    onEvent,
     makeDetails,
   } = opts;
 
@@ -437,7 +456,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       };
 
       const flushLine = (line: string) => {
-        if (processPiJsonLine(line, result)) emitUpdate();
+        if (processRunnerJsonLine(line, result, onEvent)) emitUpdate();
         maybeFinishFromAgentEnd();
       };
 
