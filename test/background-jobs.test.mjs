@@ -962,6 +962,68 @@ test("formatJobStatus shows completed state with duration from callStates", asyn
   }
 });
 
+test("formatJobStatus shows mixed running and queued call states (simulating concurrency queue)", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_mixed",
+      createdAt: Date.now() - 10000,
+      updatedAt: Date.now() - 10000,
+      status: "running",
+      calls: [
+        { index: 0, agent: "explorer", prompt: "Search files", effectiveCwd: "/tmp", initialContext: "empty" },
+        { index: 1, agent: "reviewer", prompt: "Review code", effectiveCwd: "/tmp", initialContext: "empty" },
+      ],
+      results: [],
+      callStates: [
+        { phase: "running", startedAt: Date.now() - 5000, toolCalls: 2, recentActivity: ["→ read src/index.ts"] },
+        { phase: "queued", toolCalls: 0, recentActivity: [] },
+      ],
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /subjob_mixed/);
+    assert.match(text, /running/);
+    // First call shows running with activity
+    assert.match(text, /explorer/);
+    assert.match(text, /running.*elapsed/);
+    assert.match(text, /read src\/index\.ts/);
+    // Second call shows queued
+    assert.match(text, /reviewer/);
+    assert.match(text, /queued/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobStatus shows spawning phase for starting call", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_spawn1",
+      createdAt: Date.now() - 3000,
+      updatedAt: Date.now() - 3000,
+      status: "running",
+      calls: [{ index: 0, agent: "explorer", prompt: "Do work", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [],
+      callStates: [
+        { phase: "spawning", startedAt: Date.now() - 500, toolCalls: 0, recentActivity: [] },
+      ],
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /subjob_spawn1/);
+    assert.match(text, /spawning/);
+    assert.match(text, /elapsed/);
+  } finally {
+    cleanup();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // FormatJobResults — defensive validation
 // ---------------------------------------------------------------------------

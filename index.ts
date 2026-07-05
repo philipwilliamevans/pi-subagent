@@ -54,6 +54,7 @@ import {
   renderSubagentResultResult,
 } from "./render.js";
 import { updateCallStateFromPartial } from "./background-activity.js";
+import { finishCallState } from "./background-lifecycle.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
 import { getResultSummaryText } from "./runner-events.js";
 import { mapConcurrent, runAgent } from "./runner.js";
@@ -1566,6 +1567,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           const cs = job.callStates[index];
           cs.phase = "spawning";
           cs.startedAt = Date.now();
+          cs.phase = "running";
 
           const result = await runAgent({
             cwd: defaultCwd,
@@ -1596,9 +1598,9 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
             makeDetails,
           });
 
-          // Phase transition based on result
-          cs.phase = isResultError(result) ? "failed" : "completed";
-          cs.completedAt = Date.now();
+          // Phase transition based on result (use finishCallState to
+          // preserve cancelled status if cancellation fired mid‑run).
+          finishCallState(job, index, result, Date.now());
           return result;
         },
       );
