@@ -150,6 +150,19 @@ export function getAllBackgroundJobs(): BackgroundJob[] {
  * The returned shape includes both the durable escalation ID and enough
  * display context for parent-agent routing decisions.
  */
+/**
+ * Find a single open escalation by its ID across all background jobs.
+ * Returns undefined if no open escalation with that ID exists.
+ */
+export function getOpenEscalationById(
+	escalationId: string,
+): BackgroundOpenEscalation | undefined {
+	return getOpenEscalations().find((item) => item.escalationId === escalationId);
+}
+
+/**
+ * Return all currently open human-input escalations across background jobs.
+ */
 export function getOpenEscalations(): BackgroundOpenEscalation[] {
   const open: BackgroundOpenEscalation[] = [];
   for (const job of getAllBackgroundJobs()) {

@@ -10,7 +10,8 @@ export type SubagentLifecycleEventName =
   | "pi-subagent:continued"
   | "pi-subagent:completed"
   | "pi-subagent:failed"
-  | "pi-subagent:cancelled";
+  | "pi-subagent:cancelled"
+  | "pi-subagent:closed";
 
 interface PiEventEmitter {
   events?: {

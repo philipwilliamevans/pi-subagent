@@ -177,6 +177,44 @@ test("persistJobState round-trips needs_input metadata", () => {
   }
 });
 
+test("persistJobState round-trips dismissed escalation metadata", () => {
+  const baseDir = createTempBase();
+  try {
+    const dismissed = {
+      id: "esc_dismissed_store",
+      callIndex: 0,
+      kind: "freeform",
+      question: "Should I continue inspecting?",
+      marker: "AWAITING_CHOICE",
+      status: "dismissed",
+      createdAt: 10000,
+      updatedAt: 12000,
+      closedAt: 12000,
+      closeReason: "User ended the session.",
+    };
+    const job = makeMinimalJob("subjob_dismissed_001", "completed", {
+      callStates: [{ phase: "completed", toolCalls: 0, recentActivity: [], completedAt: 12000 }],
+      awaitMarker: "AWAITING_CHOICE",
+      escalations: [dismissed],
+    });
+
+    storeModule.persistJobState(baseDir, job);
+    const loaded = storeModule.loadPersistedJob(baseDir, "subjob_dismissed_001");
+
+    assert.ok(loaded);
+    assert.ok(loaded.escalations);
+    assert.equal(loaded.escalations.length, 1);
+    const loadedEsc = loaded.escalations[0];
+    assert.equal(loadedEsc.id, "esc_dismissed_store");
+    assert.equal(loadedEsc.status, "dismissed");
+    assert.equal(loadedEsc.closedAt, 12000);
+    assert.equal(loadedEsc.closeReason, "User ended the session.");
+    assert.equal(loadedEsc.question, "Should I continue inspecting?");
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("persistJobState round-trips escalation history", () => {
   const baseDir = createTempBase();
   try {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   CALL_FIELDS,
   formatAvailableSubagentsPrompt,
+  formatSubagentCloseToolDescription,
   formatSubagentStartToolDescription,
   formatSubagentToolDescription,
   getCallFieldSchemaDescription,
@@ -110,8 +111,42 @@ test("background contract discourages quoting completion notification content", 
   assert.match(prompt, /signal to inspect/);
 });
 
+test("background contract has a cardinal rule about never dumping verbatim output", () => {
+  const prompt = makePrompt();
+  assert.match(prompt, /Cardinal rule: never dump verbatim subagent output/);
+  assert.match(prompt, /concise summary in your own words/);
+  assert.match(prompt, /\*\*Bad:\*\*/);
+  assert.match(prompt, /\*\*Good:\*\*/);
+});
+
+test("background contract warns parent not to re-display escalation content", () => {
+  const prompt = makePrompt();
+  assert.match(prompt, /already shows the subagent's output to the user/);
+  assert.match(prompt, /re-display or re-summarise/);
+  assert.match(prompt, /Longer quotes waste context/);
+});
+
 test("background contract prioritizes needs_input and failed jobs", () => {
   const prompt = makePrompt();
   assert.ok(prompt.includes("Prioritize `needs_input` and `failed`"));
   assert.match(prompt, /they need your attention first/);
+});
+
+test("subagent_close tool description is present and explains close vs continue", () => {
+  const desc = formatSubagentCloseToolDescription();
+
+  assert.match(desc, /Close a background subagent job/);
+  assert.match(desc, /does \*\*not\*\* wake the child/);
+  assert.match(desc, /subagent_cancel/);
+  assert.match(desc, /escalationId/);
+  assert.match(desc, /confirm: true/);
+});
+
+test("background contract tells parent to use subagent_close instead of continue for goodbye", () => {
+  const prompt = makePrompt();
+
+  assert.match(prompt, /Use \`subagent_close\` when no further action is needed/);
+  assert.match(prompt, /do \*\*not\*\* use \`subagent_continue\` to say goodbye/);
+  assert.match(prompt, /would wake the[^]*child agent/);
+  assert.match(prompt, /marks the job as completed without resuming the child/);
 });

@@ -201,7 +201,7 @@ function hydrateEscalation(
     kind: current.kind === "choice" ? "choice" : "freeform",
     question: typeof current.question === "string" ? current.question : fallbackQuestion,
     marker,
-    status: current.status === "answered" || current.status === "cancelled"
+    status: current.status === "answered" || current.status === "dismissed" || current.status === "cancelled"
       ? current.status
       : "open",
     createdAt,
@@ -209,6 +209,8 @@ function hydrateEscalation(
   };
   if (typeof current.answeredAt === "number") escalation.answeredAt = current.answeredAt;
   if (typeof current.answer === "string") escalation.answer = current.answer;
+  if (typeof current.closedAt === "number") escalation.closedAt = current.closedAt;
+  if (typeof current.closeReason === "string") escalation.closeReason = current.closeReason;
   return escalation;
 }
 

@@ -21,6 +21,7 @@ import {
   registerBackgroundJob,
   getBackgroundJob,
   getAllBackgroundJobs,
+  getOpenEscalationById,
   getOpenEscalations,
   setJobStoreBaseDir,
   reloadPersistedJobs,
@@ -35,6 +36,7 @@ import {
   CALLS_SCHEMA_DESCRIPTION,
   formatAvailableSubagentsPrompt,
   formatSubagentCancelToolDescription,
+  formatSubagentCloseToolDescription,
   formatSubagentContinueToolDescription,
   formatSubagentPeekToolDescription,
   formatSubagentResultToolDescription,
@@ -56,11 +58,14 @@ import {
   formatJobList,
   formatJobResults,
   formatJobStatus,
+  formatSubagentCloseAcknowledgement,
   renderBackgroundCall,
   renderBackgroundResult,
   renderCall,
   renderCancelCall,
   renderCancelResult,
+  renderCloseCall,
+  renderCloseResult,
   renderContinueCall,
   renderContinueResult,
   renderJobStatusCall,
@@ -113,6 +118,7 @@ import {
   DEFAULT_INTERACTIVE_AWAIT_MARKER,
   appendInteractiveWaitInstructions,
   createBackgroundEscalation,
+  dismissBackgroundEscalation,
   emptyUsage,
   formatBackgroundEscalationDetails,
   formatSubagentContinueAcknowledgement,
@@ -307,6 +313,24 @@ const SubagentContinueParams = Type.Object({
     Type.Integer({
       description: "0-based call index to continue. Omit to use the parked call.",
       minimum: 0,
+    }),
+  ),
+});
+
+const SubagentCloseParams = Type.Object({
+  jobId: Type.Optional(
+    Type.String({
+      description: "ID of the parked background job to close. Optional when escalationId is provided.",
+    }),
+  ),
+  escalationId: Type.Optional(
+    Type.String({
+      description: "ID of the open escalation to close. Prefer this when available.",
+    }),
+  ),
+  reason: Type.Optional(
+    Type.String({
+      description: "Optional parent-facing reason for closing the parked job.",
     }),
   ),
 });
@@ -2167,6 +2191,194 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       renderCall: (args, theme) => renderCancelCall(args, theme),
       renderResult: (result, { expanded }, theme) =>
         renderCancelResult(result, expanded, theme),
+    });
+
+    // -----------------------------------------------------------------------
+    // subagent_close — close a parked interactive background job
+    // -----------------------------------------------------------------------
+
+    pi.registerTool({
+      name: "subagent_close",
+      label: "Close background subagent",
+      description: formatSubagentCloseToolDescription(),
+      parameters: SubagentCloseParams,
+
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        // --- Root-only guard ---
+        if (currentDepth > 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "`subagent_close` can only be run from the root parent Pi session.",
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // --- Resolve target ---
+        let job: BackgroundJob | undefined;
+        const escalationId = typeof params.escalationId === "string"
+          ? params.escalationId.trim()
+          : "";
+        const jobId = typeof params.jobId === "string" ? params.jobId.trim() : "";
+        const reason = typeof params.reason === "string" ? params.reason.trim() : "";
+
+        if (!jobId && !escalationId) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "`subagent_close` requires either `jobId` or `escalationId`.",
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (escalationId) {
+          const target = getOpenEscalationById(escalationId);
+          if (!target) {
+            const waiting = getOpenEscalations()
+              .map((item) => `  ${item.escalationId} (${item.jobId} ${item.agent})`)
+              .join("\n");
+            const hint = waiting ? `Open escalations:\n${waiting}` : "No open subagent escalations.";
+            return {
+              content: [{ type: "text", text: `Unknown open escalation: \`${escalationId}\`.\n${hint}` }],
+              isError: true,
+            };
+          }
+          if (jobId && jobId !== target.jobId) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Escalation \`${escalationId}\` belongs to job \`${target.jobId}\`, not \`${jobId}\`.`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          job = getBackgroundJob(target.jobId);
+        } else {
+          job = getBackgroundJob(jobId);
+        }
+
+        if (!job) {
+          const ids = getAllBackgroundJobs().map((j) => `  ${j.id} (${j.status})`).join("\n");
+          const hint = ids ? `Known jobs:\n${ids}` : "No background subagent jobs.";
+          return {
+            content: [{ type: "text", text: `Unknown background job: \`${jobId}\`.\n${hint}` }],
+            isError: true,
+          };
+        }
+
+        // --- Validate status ---
+        if (job.status === "running" || job.status === "cancelling") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Job \`${job.id}\` is ${job.status}, not needs_input. Use \`subagent_cancel\` for running jobs.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (isJobTerminal(job.status)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Job \`${job.id}\` is already ${job.status}. Nothing to close.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (job.status !== "needs_input" || !job.waitingForInput) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Job \`${job.id}\` is ${job.status}, not needs_input. Only parked jobs can be closed.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (escalationId && job.waitingForInput.id !== escalationId) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Escalation \`${escalationId}\` is no longer open on job \`${job.id}\`.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // --- Perform the close transition ---
+        const now = Date.now();
+        const callIndex = job.waitingForInput.callIndex;
+
+        // Mark the escalation as dismissed
+        const dismissedEscalation = dismissBackgroundEscalation(
+          job.waitingForInput,
+          reason || undefined,
+          now,
+        );
+        job.escalations = upsertBackgroundEscalation(
+          job.escalations,
+          dismissedEscalation,
+        );
+        job.waitingForInput = undefined;
+
+        // Mark the call as completed
+        const cs = job.callStates[callIndex];
+        if (cs) {
+          cs.phase = "completed";
+          cs.completedAt = cs.completedAt ?? now;
+        }
+
+        // Mark the job as completed
+        job.status = "completed";
+        job.updatedAt = now;
+
+        // Persist
+        persistBackgroundJob(job);
+
+        // Persist result artifact if results exist
+        if (job.results && job.results.length > 0) {
+          const resultText = formatJobResults(job, {});
+          persistJobResultArtifact(job.id, resultText);
+        }
+
+        // Emit lifecycle event
+        emitSubagentLifecycleEvent(pi, "pi-subagent:closed", job, {
+          callIndex,
+          escalation: dismissedEscalation,
+        });
+
+        // Return the close acknowledgement
+        return {
+          content: [
+            {
+              type: "text",
+              text: formatSubagentCloseAcknowledgement(job, reason || undefined),
+            },
+          ],
+        };
+      },
+
+      renderCall: (args, theme) => renderCloseCall(args, theme),
+      renderResult: (result, { expanded }, theme) =>
+        renderCloseResult(result, expanded, theme),
     });
 
     // -----------------------------------------------------------------------

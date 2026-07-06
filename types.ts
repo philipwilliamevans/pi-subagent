@@ -101,11 +101,13 @@ export interface BackgroundEscalation {
 	kind: "freeform" | "choice";
 	question: string;
 	marker: string;
-	status: "open" | "answered" | "cancelled";
+	status: "open" | "answered" | "dismissed" | "cancelled";
 	createdAt: number;
 	updatedAt: number;
 	answeredAt?: number;
 	answer?: string;
+	closedAt?: number;
+	closeReason?: string;
 }
 
 /** A plan queued to fire when background jobs complete. */
@@ -363,6 +365,21 @@ export function createBackgroundEscalation(
 		marker,
 		status: "open",
 		createdAt: now,
+		updatedAt: now,
+	};
+}
+
+/** Mark an open escalation as dismissed (closed by parent without answering). */
+export function dismissBackgroundEscalation(
+	escalation: BackgroundEscalation,
+	reason: string | undefined,
+	now = Date.now(),
+): BackgroundEscalation {
+	return {
+		...escalation,
+		status: "dismissed",
+		closeReason: reason ?? "Closed by parent: no further action requested.",
+		closedAt: now,
 		updatedAt: now,
 	};
 }

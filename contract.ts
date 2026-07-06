@@ -164,6 +164,25 @@ Use the \`subagent_start\` tool to fire-and-forget work in the background.
 The tool returns immediately; results arrive via an auto-injected message.
 By default the completion auto-triggers a parent turn — just omit \`onComplete\`.
 
+> **﹟ Cardinal rule: never dump verbatim subagent output in your response.**
+>
+> When a subagent returns results — whether via escalation (\`needs_input\`),
+> completion notification, or \`subagent_result\` — read the output for your
+> own context, then present a **concise summary in your own words**.
+>
+> **Do not quote, re-display, or reproduce the subagent's output verbatim.**
+> The user already sees the escalation question or completion notification in
+> the injected message. Your job is to react, decide what to do next, or ask
+> the user for direction — not to parrot what the subagent said.
+>
+> **Bad:** "The explorer delivered this plan:\n\n## Step 1 ... (hundreds of lines)"
+> **Good:** "The explorer produced a refactor plan for TraceProjectionService
+> with 7 steps (envelope type, service class, route handler, etc.)."
+>
+> **Bad:** "Here are the explorer's findings:\n\nThe file imports ... (wall of text)"
+> **Good:** "The explorer found 3 circular imports and 2 unused dependencies.
+> I'll address them next."
+
 **Fleet view is your primary state source.** Use \`subagent_status\` without
 a \`jobId\` to see all background jobs grouped by attention priority:
   1. \`needs_input\` — jobs waiting for user direction
@@ -218,6 +237,22 @@ and do not mention markers.
 After calling \`subagent_continue\`, acknowledge briefly and naturally. Do not
 repeat the subagent's previous question unless the user asks, and do not claim
 the subagent has finished until a completion message arrives.
+
+**The escalation message already shows the subagent's output to the user.**
+The injected message from a parked subagent already contains its full
+question, plan, or findings. Do **not** re-display or re-summarise that
+content in your response. The user sees it in the escalation message.
+Your job is to react — ask for direction, decide next steps, or take
+action. A one-line acknowledgement ("The explorer is asking which area
+to inspect next.") is sufficient. Longer quotes waste context and irritate
+the user.
+
+**Use \`subagent_close\` when no further action is needed.** If the user says
+they're done, or dismisses the subagent without giving it more work to do,
+do **not** use \`subagent_continue\` to say goodbye — that would wake the
+child agent and create another \`needs_input\` cycle. Instead, call
+\`subagent_close\` which marks the job as completed without resuming the child.
+Provide the \`escalationId\` from hidden routing metadata when available.
 \`awaitMarker\` exists only as an advanced/debug override.
 
 Background jobs do not support caller-supplied persistent sessions (\`session\`).
@@ -524,6 +559,27 @@ export function formatSubagentGetPlanToolDescription(): string {
     "",
     "Example:",
     '  { "planId": "plan_ce19fdf0" }',
+  ].join("\n");
+}
+
+export function formatSubagentCloseToolDescription(): string {
+  return [
+    "Close a background subagent job that is parked in `needs_input`.",
+    "",
+    "Use this when the user says no further action is needed from the waiting",
+    "subagent. Unlike `subagent_continue`, this does **not** wake the child",
+    "agent — it marks the job as completed directly on the parent side.",
+    "",
+    "Resolves the target by `escalationId` or `jobId`. Only parked jobs",
+    "with an open escalation can be closed. Running jobs require",
+    "`subagent_cancel` instead.",
+    "",
+    "`confirm: true` is not required — closing only applies to already-parked",
+    "jobs and does not terminate a running process.",
+    "",
+    "Examples:",
+    '  { "jobId": "subjob_abc123" }',
+    '  { "escalationId": "esc_1234abcd", "reason": "User chose to end the conversation." }',
   ].join("\n");
 }
 

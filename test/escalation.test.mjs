@@ -108,6 +108,70 @@ test("formatSubagentContinueAcknowledgement is concise and parent-facing", () =>
   assert.doesNotMatch(text, /job|call|marker|subagent_continue/i);
 });
 
+test("dismissBackgroundEscalation marks escalation as dismissed with default reason", () => {
+  const escalation = {
+    id: "esc_close1",
+    callIndex: 0,
+    kind: "freeform",
+    question: "Which path?",
+    marker: "AWAITING_SUBAGENT_INPUT",
+    status: "open",
+    createdAt: 100,
+    updatedAt: 100,
+  };
+
+  const dismissed = types.dismissBackgroundEscalation(escalation, undefined, 200);
+
+  assert.equal(dismissed.id, "esc_close1");
+  assert.equal(dismissed.question, "Which path?");
+  assert.equal(dismissed.status, "dismissed");
+  assert.equal(dismissed.closeReason, "Closed by parent: no further action requested.");
+  assert.equal(dismissed.closedAt, 200);
+  assert.equal(dismissed.updatedAt, 200);
+  assert.equal(dismissed.createdAt, 100);
+  assert.equal(dismissed.answeredAt, undefined);
+  assert.equal(dismissed.answer, undefined);
+});
+
+test("dismissBackgroundEscalation accepts custom reason", () => {
+  const escalation = {
+    id: "esc_close2",
+    callIndex: 1,
+    kind: "freeform",
+    question: "Proceed?",
+    marker: "AWAITING_CHOICE",
+    status: "open",
+    createdAt: 300,
+    updatedAt: 300,
+  };
+
+  const dismissed = types.dismissBackgroundEscalation(escalation, "User ended the session.", 500);
+
+  assert.equal(dismissed.status, "dismissed");
+  assert.equal(dismissed.closeReason, "User ended the session.");
+  assert.equal(dismissed.closedAt, 500);
+  assert.equal(dismissed.updatedAt, 500);
+});
+
+test("BackgroundEscalation accepts dismissed status and closeReason", () => {
+  // Verify the new fields are usable at runtime
+  const escalation = {
+    id: "esc_dismissed_type",
+    callIndex: 0,
+    kind: "freeform",
+    question: "Done?",
+    marker: "AWAITING_INPUT",
+    status: "dismissed",
+    createdAt: 100,
+    updatedAt: 200,
+    closedAt: 200,
+    closeReason: "Closed by parent.",
+  };
+  assert.equal(escalation.status, "dismissed");
+  assert.equal(escalation.closeReason, "Closed by parent.");
+  assert.equal(escalation.closedAt, 200);
+});
+
 test("formatBackgroundEscalationDetails returns hidden routing metadata", () => {
   const details = types.formatBackgroundEscalationDetails({
     id: "subjob_waiting",

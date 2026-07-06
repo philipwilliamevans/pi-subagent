@@ -876,12 +876,37 @@ function formatJobArtifacts(job: BackgroundJob): string[] {
 }
 
 function formatJobEscalations(job: BackgroundJob): string[] {
-	if (job.status !== "needs_input" || !job.waitingForInput) return [];
-	const question = job.waitingForInput.question.trim();
-	return [
-		"Waiting for input",
-		`  ${truncateOneLine(question, 160)}`,
-	];
+	const lines: string[] = [];
+
+	// Current waiting escalation
+	if (job.status === "needs_input" && job.waitingForInput) {
+		const question = job.waitingForInput.question.trim();
+		lines.push("Waiting for input");
+		lines.push(`  ${truncateOneLine(question, 160)}`);
+	}
+
+	// Historical escalations (dismissed, answered, cancelled)
+	if (job.escalations && job.escalations.length > 0) {
+		const historical = job.escalations.filter(
+			(e) => e.status !== "open" || e.id !== job.waitingForInput?.id,
+		);
+		if (historical.length > 0) {
+			lines.push("Escalations");
+			for (const esc of historical) {
+				const statusLabel =
+					esc.status === "dismissed"
+						? `dismissed${esc.closeReason ? `: ${esc.closeReason}` : ""}`
+						: esc.status === "answered"
+							? "answered"
+							: esc.status === "cancelled"
+								? "cancelled"
+								: esc.status;
+				lines.push(`  ${esc.id} ${statusLabel}`);
+			}
+		}
+	}
+
+	return lines;
 }
 
 function formatJobNextActions(job: BackgroundJob): string[] {
@@ -904,6 +929,23 @@ function formatJobNextActions(job: BackgroundJob): string[] {
 		}
 	}
 	return lines;
+}
+
+/** Acknowledgement text for a closed parked job. */
+export function formatSubagentCloseAcknowledgement(
+	job: BackgroundJob,
+	reason?: string,
+): string {
+	const lines: string[] = [
+		`Closed waiting subagent job \`${job.id}\`.`,
+		"",
+		`No further action was requested. The job is now completed.`,
+		`Use \`subagent_result\` with jobId \`${job.id}\` to inspect the captured output.`,
+	];
+	if (reason) {
+		lines.splice(2, 0, `Reason: ${reason}`);
+	}
+	return lines.join("\n");
 }
 
 /**
@@ -1787,6 +1829,48 @@ export function renderCancelResult(
 	const mdTheme = getMarkdownTheme();
 	const container = new Container();
 	container.addChild(new Text(theme.fg("warning", "◐ ") + theme.fg("toolTitle", theme.bold("subagent_cancel ")) + theme.fg("muted", "cancel"), 0, 0));
+	container.addChild(new Spacer(1));
+	container.addChild(new Markdown(text.trim(), 0, 0, mdTheme));
+	return container;
+}
+
+// ---------------------------------------------------------------------------
+// Render for subagent_close
+// ---------------------------------------------------------------------------
+
+/**
+ * Render for subagent_close tool call.
+ */
+export function renderCloseCall(
+	args: Record<string, any>,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text {
+	const jobId = typeof args.jobId === "string" ? args.jobId : "?";
+	return new Text(
+		theme.fg("toolTitle", theme.bold("subagent_close ")) + theme.fg("accent", jobId),
+		0,
+		0,
+	);
+}
+
+/**
+ * Render for subagent_close tool result.
+ */
+export function renderCloseResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+	_expanded: boolean,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text | Container {
+	const first = result.content[0];
+	const text = first?.type === "text" && first.text ? first.text : "";
+
+	if (!text) {
+		return new Text("(no output)", 0, 0);
+	}
+
+	const mdTheme = getMarkdownTheme();
+	const container = new Container();
+	container.addChild(new Text(theme.fg("toolTitle", theme.bold("subagent_close ")) + theme.fg("muted", "closed"), 0, 0));
 	container.addChild(new Spacer(1));
 	container.addChild(new Markdown(text.trim(), 0, 0, mdTheme));
 	return container;
