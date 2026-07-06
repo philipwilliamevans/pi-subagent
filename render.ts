@@ -294,6 +294,23 @@ export function formatArtifactSummary(job: BackgroundJob): string {
 }
 
 /**
+ * If a completed background job has a persisted session that can be continued
+ * via the foreground \`subagent\` tool, return a hint showing the session handle.
+ * Returns empty string if there is no usable session.
+ */
+export function formatSessionContinueHint(job: BackgroundJob): string {
+  if (job.status !== "completed") return "";
+  if (!job.calls || job.calls.length === 0) return "";
+
+  // Find the first call with a session handle
+  const firstCall = job.calls.find((c) => c.sessionHandle);
+  if (!firstCall?.sessionHandle) return "";
+
+  const agentName = firstCall.agent;
+  return `continue: subagent session "${firstCall.sessionHandle}" agent ${agentName}`;
+}
+
+/**
  * Detailed artifact listing for job detail view (subagent_status { jobId }).
  * Shows each artifact's kind, path/value, and count.
  */
@@ -669,7 +686,12 @@ export function formatBackgroundCompletion(
 	} else if (job.worktreeMetadata) {
 		lines.push(`Next: inspect with \`subagent_result\` before integrating changes.`);
 	} else {
-		lines.push(`Next: use \`subagent_result\` with jobId ${jobRef} to inspect the full report.`);
+		const sessionHint = formatSessionContinueHint(job);
+		if (sessionHint) {
+			lines.push(`Next: ${sessionHint}, or \`subagent_result\` with jobId ${jobRef}.`);
+		} else {
+			lines.push(`Next: use \`subagent_result\` with jobId ${jobRef} to inspect the full report.`);
+		}
 	}
 
 	return lines.join("\n");
@@ -784,6 +806,15 @@ function formatJobHeader(job: BackgroundJob): string[] {
 	} else if (job.worktreeScope) {
 		lines.push(`Scope: ${job.worktreeScope}`);
 	}
+
+	// Expose session handle for completed jobs so the parent can continue the conversation
+	if (job.status === "completed") {
+		const firstCall = job.calls.find((c) => c.sessionHandle);
+		if (firstCall?.sessionHandle) {
+			lines.push(`Session: ${firstCall.sessionHandle}`);
+		}
+	}
+
 	return lines;
 }
 
@@ -1008,7 +1039,11 @@ function formatFleetJobRow(job: BackgroundJob): string[] {
 	} else if (job.status === "completed") {
 		const artifactSummary = formatArtifactSummary(job);
 		statusFields = artifactSummary ? `artifacts: ${artifactSummary}` : "completed";
-		nextAction = `next: subagent_result jobId ${job.id}`;
+		// Show session handle hint if this job has a session that can be continued
+		const sessionHint = formatSessionContinueHint(job);
+		nextAction = sessionHint
+			? sessionHint
+			: `next: subagent_result jobId ${job.id}`;
 	} else if (job.status === "cancelled" || job.status === "interrupted") {
 		nextAction = `next: subagent_status`;
 	}

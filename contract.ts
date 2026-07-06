@@ -226,23 +226,27 @@ create an internal job-owned child session for continuation.
 Jobs that use \`interactive: true\` do the same without exposing the marker.
 
 **Continuing a completed background job's investigation:**
-When a background job finishes and the user wants the same line of inquiry
-continued (e.g. "ask the subagent to dig into topic X"), the completed job
-cannot be resumed because background jobs have no persistent session.
-Instead:
-- Use the **foreground** \`subagent\` tool (not \`subagent_start\`)
-  with a \`session\` handle and \`initialContext: "parent"\`.
-  This creates a new subagent conversation seeded with the current
-  parent session context, so the subagent knows what was discussed.
-- In the prompt, reference the previous findings explicitly
-  (e.g. "Based on your earlier analysis of ARCHITECTURE_GUIDELINES.md
-  §8, now investigate...").
-- For a separate parallel investigation, use \`subagent_start\` as normal.
+Every background job call already creates a persistent child Pi session
+with a handle like \`background:<jobId>:call:<index>\` (visible in the
+job detail view and hinted in fleet/completion views).
+When the user wants to continue the same line of inquiry (e.g. "dig into
+topic X from your earlier analysis"), use the **foreground** \`subagent\`
+tool with \`session: "background:<jobId>:call:<index>"\` from the
+completed job. This continues the exact same child Pi session, so the
+subagent retains the full conversation history.
 
-Do NOT start a background job with two calls where one is meant to
-continue a previous conversation. Use \`subagent\` (foreground with
-session) for the continuation and \`subagent_start\` for the new task.
-This preserves the conversation history and gives clearer results.
+Example:
+- Job \`subjob_8c920f76\` completed with explorer findings.
+- \`subagent_status { jobId: "subjob_8c920f76" }\` shows
+  \`Session: background:subjob_8c920f76:call:0\`.
+- Call \`subagent\` with \`session: "background:subjob_8c920f76:call:0"\`
+  and a prompt like \"Continue your investigation into §8 Config...\".
+- The subagent resumes the same conversation with full history.
+
+Do NOT start a background job for continuation — that would create an
+entirely new subagent without the previous context. Use foreground
+\`subagent\` with the session handle for continuation, and
+\`subagent_start\` for separate new tasks.
 
 **Important:** Background jobs run in the same working tree by default
 and can edit files concurrently with the parent or sibling jobs. Always:
@@ -372,18 +376,18 @@ export function formatSubagentStartToolDescription(): string {
     "Interactive example:",
     '  { "interactive": true, "calls": [{ "agent": "explorer", "prompt": "Inspect runner.ts and offer three follow-up directions." }] }',
   "Continuing a completed job's investigation:",
-    "  - Completed background jobs cannot be resumed (no session support).",
-    "  - If the user asks to continue a completed job's line of inquiry",
-    "    (e.g. \"ask the subagent to dig into topic X\"), use the foreground",
-    "    \`subagent\` tool (not \`subagent_start\`) with a \`session\` handle",
-    "    and \`initialContext: \"parent\"\`. This seeds a new subagent",
-    "    conversation with the parent session context.",
-    "  - Reference the previous findings in the prompt (\"Based on your earlier",
-    "    analysis of...\") so the new subagent knows what was discussed.",
+    "  - Every background job call already creates a persistent child Pi",
+    "    session with handle \`background:<jobId>:call:<index>\`.",
+    "  - When the user wants to continue a completed investigation",
+    "    (e.g. \"dig into topic X from your earlier analysis\"), use the",
+    "    **foreground** \`subagent\` tool with",
+    "    \`session: \"background:<jobId>:call:<index>\"\`.",
+    "    This resumes the exact same child Pi session with full history.",
+    "  - The session handle is visible in \`subagent_status { jobId }\`",
+    "    under the \`Session:\` field, and hinted in completion notifications.",
     "  - For separate parallel tasks, use \`subagent_start\` as normal.",
-    "  - Do NOT pack both a continuation task and a new task into one",
-    "    background job with two calls. Use foreground \`subagent\` for the",
-    "    continuation and \`subagent_start\` for the new work.",
+    "  - Do NOT start a background job for continuation — use foreground",
+    "    \`subagent\` with the session handle instead.",
   ].join("\n");
 }
 
