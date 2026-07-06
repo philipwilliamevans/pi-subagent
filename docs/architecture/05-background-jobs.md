@@ -69,6 +69,19 @@ When execution finishes:
 
 On each status change the persisted state.json is updated. For terminal jobs a result.md artifact is also written to disk containing the formatted output available via `subagent_result`.
 
+## Lifecycle events
+
+Background jobs emit best-effort lifecycle events through `pi.events.emit` when that API is available. Event names use the Pi extension namespace:
+
+- `pi-subagent:started`
+- `pi-subagent:escalated`
+- `pi-subagent:continued`
+- `pi-subagent:completed`
+- `pi-subagent:failed`
+- `pi-subagent:cancelled`
+
+Payloads include `version: 1`, `source: "pi-subagent"`, stable job IDs, status, timestamps, optional call/agent identity, and worktree metadata when available. Escalation and continuation events also include the escalation ID, question, kind, and the user answer when present. Event delivery is telemetry-only; listener errors are ignored so job execution continues.
+
 ## Completion delivery
 
 `onComplete` controls parent notification:

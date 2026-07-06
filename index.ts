@@ -75,6 +75,7 @@ import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-pat
 import { getResultSummaryText } from "./runner-events.js";
 import { mapConcurrent, runAgent } from "./runner.js";
 import { acquireSessionLocks, releaseSessionLocks, type SessionLockTarget } from "./session-lock.js";
+import { emitSubagentLifecycleEvent } from "./subagent-events.js";
 import {
   createWorktree,
   createWorktreePatch,
@@ -1583,7 +1584,8 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           interactive,
         };
 
-        // Populate promise with async execution.
+        registerBackgroundJob(job);
+        emitSubagentLifecycleEvent(pi, "pi-subagent:started", job);
         job.promise = runBackgroundSubagentJob(
           job,
           agents,
@@ -1592,8 +1594,6 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           persistentSessionDir,
           makeDetails,
         );
-
-        registerBackgroundJob(job);
 
         // --- Immediate return ---
         const callList = displayCalls
@@ -1934,6 +1934,11 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           recentActivity: [],
         };
         persistBackgroundJob(job);
+        emitSubagentLifecycleEvent(pi, "pi-subagent:continued", job, {
+          callIndex,
+          escalation: answeredEscalation,
+          answer: params.prompt,
+        });
 
         job.promise = continueBackgroundSubagentJob(
           job,
@@ -2324,6 +2329,16 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
     );
   }
 
+  function emitTerminalSubagentLifecycleEvent(job: BackgroundJob): void {
+    if (job.status === "completed") {
+      emitSubagentLifecycleEvent(pi, "pi-subagent:completed", job);
+    } else if (job.status === "failed") {
+      emitSubagentLifecycleEvent(pi, "pi-subagent:failed", job);
+    } else if (job.status === "cancelled") {
+      emitSubagentLifecycleEvent(pi, "pi-subagent:cancelled", job);
+    }
+  }
+
   /**
    * Execute a background job's calls and update its state upon completion.
    */
@@ -2369,6 +2384,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         job.error = error instanceof Error ? error.message : String(error);
         updateBackgroundJobStatus(job.id, "failed");
         setBackgroundJobResults(job.id, []);
+        emitSubagentLifecycleEvent(pi, "pi-subagent:failed", job);
         postCompletionMessage(job);
         return;
       }
@@ -2432,6 +2448,11 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       }
       job.results = results;
       job.updatedAt = Date.now();
+      if (job.status === "needs_input" && job.waitingForInput) {
+        emitSubagentLifecycleEvent(pi, "pi-subagent:escalated", job, {
+          escalation: job.waitingForInput,
+        });
+      }
 
       if (job.worktreeMode === "isolated" && job.worktreeMetadata) {
         try {
@@ -2469,6 +2490,8 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         persistJobResultArtifact(job.id, resultText);
       }
 
+      emitTerminalSubagentLifecycleEvent(job);
+
       postCompletionMessage(job);
     } catch (error) {
       job.status = "failed";
@@ -2476,6 +2499,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       job.error = error instanceof Error ? error.message : String(error);
       updateBackgroundJobStatus(job.id, "failed");
       setBackgroundJobResults(job.id, []);
+      emitSubagentLifecycleEvent(pi, "pi-subagent:failed", job);
       postCompletionMessage(job);
     }
   }
@@ -2531,6 +2555,11 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
 
       job.results = results;
       job.updatedAt = Date.now();
+      if (job.status === "needs_input" && job.waitingForInput) {
+        emitSubagentLifecycleEvent(pi, "pi-subagent:escalated", job, {
+          escalation: job.waitingForInput,
+        });
+      }
 
       if (job.worktreeMode === "isolated" && job.worktreeMetadata) {
         collectWorktreeMetadata(job, defaultCwd);
@@ -2540,6 +2569,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       setBackgroundJobResults(job.id, results);
       const resultText = formatJobResults(job as any, {});
       persistJobResultArtifact(job.id, resultText);
+      emitTerminalSubagentLifecycleEvent(job);
       postCompletionMessage(job);
     } catch (error) {
       job.status = "failed";
@@ -2547,6 +2577,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       job.error = error instanceof Error ? error.message : String(error);
       updateBackgroundJobStatus(job.id, "failed");
       setBackgroundJobResults(job.id, job.results ?? [], job.error);
+      emitSubagentLifecycleEvent(pi, "pi-subagent:failed", job);
       postCompletionMessage(job);
     }
   }

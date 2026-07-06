@@ -19,6 +19,7 @@
     "session-lock.ts",
     "session-paths.ts",
     "render.ts",
+    "subagent-events.ts",
     "types.ts",
     "worktree.ts",
     "agents/*.md",
