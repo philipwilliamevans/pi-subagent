@@ -198,6 +198,51 @@ test("running results are neither success nor error", () => {
   assert.equal(isResultError(result), false);
 });
 
+test("isNewAgentCycle returns true for agent_start", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { isNewAgentCycle } = await import(moduleUrl);
+    assert.equal(isNewAgentCycle(JSON.stringify({ type: "agent_start" })), true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("isNewAgentCycle returns true for turn_start", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { isNewAgentCycle } = await import(moduleUrl);
+    assert.equal(isNewAgentCycle(JSON.stringify({ type: "turn_start" })), true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("isNewAgentCycle returns false for other event types", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { isNewAgentCycle } = await import(moduleUrl);
+    assert.equal(isNewAgentCycle(JSON.stringify({ type: "agent_end" })), false);
+    assert.equal(isNewAgentCycle(JSON.stringify({ type: "message_update" })), false);
+    assert.equal(isNewAgentCycle(JSON.stringify({ type: "auto_retry_start" })), false);
+    assert.equal(isNewAgentCycle(JSON.stringify({ type: "turn_end" })), false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("isNewAgentCycle returns false for malformed input", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { isNewAgentCycle } = await import(moduleUrl);
+    assert.equal(isNewAgentCycle("not json"), false);
+    assert.equal(isNewAgentCycle(""), false);
+    assert.equal(isNewAgentCycle("{invalid}"), false);
+  } finally {
+    cleanup();
+  }
+});
+
 test("rewriteSessionHeaderCwd updates only the session header cwd", async () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   try {

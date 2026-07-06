@@ -9,6 +9,8 @@ The child process boundary is JSON event based. [`runner.ts`](../../runner.ts) r
 - `message_end`
 - `turn_end`
 - `agent_end`
+- `agent_start` — resets `sawAgentEnd = false` so the runner does not treat a previous error `agent_end` as terminal
+- `turn_start` — also resets `sawAgentEnd = false`; in a named session this cancels the post-completion exit timer so an auto-retry gets a full timeout window
 
 Assistant messages are deduplicated by stable JSON stringification. Each accepted assistant message updates:
 
@@ -19,7 +21,7 @@ Assistant messages are deduplicated by stable JSON stringification. Each accepte
 - token usage counters
 - turn count
 
-`agent_end` also sets `sawAgentEnd = true`.
+`agent_end` also sets `sawAgentEnd = true`. `agent_start` and `turn_start` set it back to `false`.
 
 ## Final output
 

@@ -14,7 +14,7 @@ This file captures the non-obvious constraints that matter when maintaining or e
 | Background concurrent calls per job | 2 | `MAX_BACKGROUND_CONCURRENCY` in [`index.ts`](../../index.ts) |
 | Non-persistent semantic completion grace | 250 ms | `AGENT_END_GRACE_MS` in [`runner.ts`](../../runner.ts) |
 | SIGKILL timeout after SIGTERM | 5000 ms | `SIGKILL_TIMEOUT_MS` in [`runner.ts`](../../runner.ts) |
-| Persistent session post-completion exit timeout | 30000 ms | `PERSISTENT_SESSION_EXIT_TIMEOUT_MS` in [`runner.ts`](../../runner.ts) |
+| Persistent session post-completion exit timeout | 30000 ms | `PERSISTENT_SESSION_EXIT_TIMEOUT_MS` in [`runner.ts`](../../runner.ts). The timer is **reset** when a new agent cycle begins (`agent_start` / `turn_start`) after a transient error, so an auto-retry gets a full timeout window. See [ADR 001](../adr/001-persistent-session-exit-timer-reset.md). |
 | Session lock heartbeat | 30000 ms | [`session-lock.ts`](../../session-lock.ts) |
 | Stale lock threshold | 2 minutes | [`session-lock.ts`](../../session-lock.ts) |
 | `subagent_result.maxOutputLength` | 50000 chars | `MAX_OUTPUT_LENGTH_LIMIT` in [`types.ts`](../../types.ts) |

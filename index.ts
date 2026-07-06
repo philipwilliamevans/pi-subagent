@@ -539,6 +539,50 @@ function resolveDelegationDepthConfig(pi: ExtensionAPI): DelegationDepthConfig {
   };
 }
 
+/**
+ * Resolve the correct default working directory for subagent tool handlers.
+ *
+ * Pi's `ctx.cwd` may resolve to `process.cwd()` rather than the session's actual
+ * working directory (e.g. when Pi started in one directory and the session lives in
+ * another). The SessionManager records the correct session cwd and is available via
+ * `getCwd()` (preferred) or the session header's `cwd` field.
+ *
+ * Falls back to `ctx.cwd` when neither source is available.
+ */
+function getEffectiveSessionCwd(ctx: {
+  sessionManager: { getCwd?: () => string; getHeader?: () => unknown };
+  cwd: string;
+}): string {
+  // Prefer SessionManager.getCwd() — this is the authoritative session cwd.
+  if (typeof ctx.sessionManager.getCwd === "function") {
+    try {
+      const cwd = ctx.sessionManager.getCwd();
+      if (typeof cwd === "string" && cwd.trim().length > 0) {
+        return path.resolve(cwd.trim());
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  // Fall back to the session header's cwd field.
+  if (typeof ctx.sessionManager.getHeader === "function") {
+    try {
+      const header = ctx.sessionManager.getHeader();
+      if (header && typeof header === "object" && "cwd" in header) {
+        const sessionCwd = (header as Record<string, unknown>).cwd;
+        if (typeof sessionCwd === "string" && sessionCwd.trim().length > 0) {
+          return path.resolve(sessionCwd.trim());
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  return ctx.cwd;
+}
+
 function makeDetailsFactory(projectAgentsDir: string | null) {
   return (results: SingleResult[]): SubagentDetails => ({
     projectAgentsDir,
@@ -742,7 +786,10 @@ function needsParentSnapshot(calls: NormalizedCall[]): boolean {
   );
 }
 
-function getPersistentSessionDir(ctx: ExtensionExecutionContext): string | undefined {
+function getPersistentSessionDir(
+  ctx: ExtensionExecutionContext,
+  effectiveCwd?: string,
+): string | undefined {
   const manager = ctx.sessionManager as unknown as {
     usesDefaultSessionDir?: () => boolean;
   };
@@ -753,7 +800,8 @@ function getPersistentSessionDir(ctx: ExtensionExecutionContext): string | undef
 
   try {
     const current = path.resolve(ctx.sessionManager.getSessionDir());
-    const defaultDir = path.resolve(getDefaultSessionDirPath(ctx.cwd));
+    const cwd = effectiveCwd ?? ctx.cwd;
+    const defaultDir = path.resolve(getDefaultSessionDirPath(cwd));
     return current === defaultDir ? undefined : ctx.sessionManager.getSessionDir();
   } catch {
     return undefined;
@@ -1010,11 +1058,12 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+        const effectiveCwd = getEffectiveSessionCwd(ctx);
+        const starterDiscovery = discoverAgentsWithStarter(effectiveCwd);
         const discovery = starterDiscovery.discovery;
         const agents = discovery.agents;
         const makeDetails = makeDetailsFactory(discovery.projectAgentsDir);
-        const persistentSessionDir = getPersistentSessionDir(ctx);
+        const persistentSessionDir = getPersistentSessionDir(ctx, effectiveCwd);
         const demoAgent = selectDemoAgent(agents);
 
         if (!demoAgent) {
@@ -1201,12 +1250,13 @@ export default function (pi: ExtensionAPI) {
       parameters: SubagentParams,
 
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
-        const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+        const effectiveCwd = getEffectiveSessionCwd(ctx);
+        const starterDiscovery = discoverAgentsWithStarter(effectiveCwd);
         const discovery = starterDiscovery.discovery;
         const { agents } = discovery;
         const makeDetails = makeDetailsFactory(discovery.projectAgentsDir);
 
-        const normalized = normalizeCalls(params.calls, ctx.cwd);
+        const normalized = normalizeCalls(params.calls, effectiveCwd);
         if (normalized.error || !normalized.calls) {
           return {
             content: [{ type: "text", text: normalized.error ?? "Invalid subagent parameters." }],
@@ -1267,7 +1317,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           }
         }
 
-        const persistentSessionDir = getPersistentSessionDir(ctx as ExtensionExecutionContext);
+        const persistentSessionDir = getPersistentSessionDir(ctx as ExtensionExecutionContext, effectiveCwd);
 
         const activeSessionError = getActiveSessionError(calls, activeSessionIds);
         if (activeSessionError) {
@@ -1334,7 +1384,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
             parentSessionSnapshotJsonl,
             persistentSessionDir,
             agents,
-            ctx.cwd,
+            effectiveCwd,
             signal,
             onUpdate,
             makeDetails,
@@ -1361,7 +1411,8 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       parameters: SubagentStartParams,
 
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-        const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+        const effectiveCwd = getEffectiveSessionCwd(ctx);
+        const starterDiscovery = discoverAgentsWithStarter(effectiveCwd);
         const discovery = starterDiscovery.discovery;
         const { agents } = discovery;
         const makeDetails = makeDetailsFactory(discovery.projectAgentsDir);
@@ -1390,7 +1441,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           };
         }
 
-        const normalized = normalizeCalls(params.calls, ctx.cwd);
+        const normalized = normalizeCalls(params.calls, effectiveCwd);
         if (normalized.error || !normalized.calls) {
           return {
             content: [{ type: "text", text: normalized.error ?? "Invalid subagent_start parameters." }],
@@ -1526,7 +1577,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
 
         // --- Git checks for isolated mode ---
         if (worktreeMode === "isolated") {
-          const gitError = checkGitPreconditions(ctx.cwd);
+          const gitError = checkGitPreconditions(effectiveCwd);
           if (gitError) {
             return {
               content: [
@@ -1539,7 +1590,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
               isError: true,
             };
           }
-          const repoRoot = getRepoRoot(ctx.cwd);
+          const repoRoot = getRepoRoot(effectiveCwd);
           for (const call of calls) {
             if (!mapRepoPathToWorktree(repoRoot, repoRoot, call.effectiveCwd)) {
               return {
@@ -1560,7 +1611,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         const jobId = generateJobId();
         const createdAt = Date.now();
         const abortController = new AbortController();
-        const persistentSessionDir = getPersistentSessionDir(ctx as ExtensionExecutionContext);
+        const persistentSessionDir = getPersistentSessionDir(ctx as ExtensionExecutionContext, effectiveCwd);
 
         const callStates: CallState[] = calls.map(() => ({
           phase: "queued" as const,
@@ -1589,7 +1640,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         job.promise = runBackgroundSubagentJob(
           job,
           agents,
-          ctx.cwd,
+          effectiveCwd,
           ctx.sessionManager.getSessionId(),
           persistentSessionDir,
           makeDetails,
@@ -1613,7 +1664,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           content: [
             {
               type: "text",
-              text: `Started background subagent job \`${jobId}\` with ${calls.length} call${calls.length === 1 ? "" : "s"}.\n\n${callList}\n\n${interactive ? "This interactive job will pause for user direction if needed." : awaitMarker ? "This job will pause for `subagent_continue` if it reaches its configured wait point." : "The result will be posted to this session when complete."}\n\n${worktreeNote}`,
+              text: `Started background subagent job \`${jobId}\` with ${calls.length} call${calls.length === 1 ? "" : "s"}.\n\n${callList}\n\n${interactive ? "This interactive job will pause for user direction if needed." : awaitMarker ? "This job will pause for `subagent_continue` if it reaches its configured wait point." : "**End your turn now.** Do not poll \`subagent_status\` — a completion message will be auto-injected when this job finishes, triggering a new assistant turn with results."}\n\n${worktreeNote}\n\n**End your turn.**`,
             },
           ],
           details: makeDetails([]),
@@ -1743,7 +1794,8 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       parameters: SubagentContinueParams,
 
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-        const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+        const effectiveCwd = getEffectiveSessionCwd(ctx);
+        const starterDiscovery = discoverAgentsWithStarter(effectiveCwd);
         const discovery = starterDiscovery.discovery;
         const { agents } = discovery;
         const makeDetails = makeDetailsFactory(discovery.projectAgentsDir);
@@ -1905,7 +1957,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           };
         }
 
-        const persistentSessionDir = getPersistentSessionDir(ctx as ExtensionExecutionContext);
+        const persistentSessionDir = getPersistentSessionDir(ctx as ExtensionExecutionContext, effectiveCwd);
         const continuationCall: NormalizedCall = {
           ...originalCall,
           prompt: params.prompt,
@@ -1945,7 +1997,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           continuationCall,
           callIndex,
           agents,
-          ctx.cwd,
+          effectiveCwd,
           persistentSessionDir,
           makeDetails,
         );

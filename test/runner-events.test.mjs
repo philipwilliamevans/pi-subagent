@@ -113,6 +113,71 @@ test("stderr remains a fallback only for error results", () => {
   assert.equal(getResultSummaryText(failedResult), "warning on stderr");
 });
 
+test("agent_start resets sawAgentEnd", () => {
+  const result = makeResult();
+
+  result.sawAgentEnd = true;
+  processPiEvent({ type: "agent_start" }, result);
+  assert.equal(result.sawAgentEnd, false);
+});
+
+test("turn_start resets sawAgentEnd", () => {
+  const result = makeResult();
+  result.sawAgentEnd = true;
+  processPiEvent({ type: "turn_start" }, result);
+  assert.equal(result.sawAgentEnd, false);
+});
+
+test("sawAgentEnd remains false on other events", () => {
+  const result = makeResult();
+  result.sawAgentEnd = false;
+
+  processPiEvent({ type: "message_start" }, result);
+  processPiEvent({ type: "message_update" }, result);
+  processPiEvent({ type: "auto_retry_start", attempt: 1, maxAttempts: 3 }, result);
+  processPiEvent({ type: "tool_execution_end", toolCallId: "call_1" }, result);
+
+  assert.equal(result.sawAgentEnd, false);
+});
+
+test("sawAgentEnd goes true → false → true", () => {
+  const result = makeResult();
+
+  processPiEvent({ type: "agent_end", messages: [] }, result);
+  assert.equal(result.sawAgentEnd, true);
+
+  processPiEvent({ type: "turn_start" }, result);
+  assert.equal(result.sawAgentEnd, false);
+
+  processPiEvent({ type: "agent_end", messages: [] }, result);
+  assert.equal(result.sawAgentEnd, true);
+});
+
+test("error → retry → success fixture preserves retry output", () => {
+  const fixturePath = path.join(testDir, "fixtures", "error-retry-success.jsonl");
+  const lines = fs.readFileSync(fixturePath, "utf8").trim().split("\n");
+  const result = makeResult();
+
+  for (const line of lines) {
+    processPiJsonLine(line, result);
+  }
+
+  // After the error agent_end, sawAgentEnd was true; after the retry's
+  // turn_start it was reset; after the retry's agent_end it is true again.
+  assert.equal(result.sawAgentEnd, true);
+  // The fixture has 7 assistant messages: the normal turns (tool call,
+  // text), the error (message_end + agent_end re-adds without model/usage),
+  // and the retry (message_end + agent_end re-adds without model/usage).
+  assert.equal(result.messages.length, 7);
+  // The retry's message_end set stopReason to "stop".
+  assert.equal(result.stopReason, "stop");
+  // Final output is the retry's complete text.
+  assert.equal(
+    getFinalAssistantText(result.messages),
+    "Here is the complete output I wanted to produce.",
+  );
+});
+
 test("process errors remain visible alongside final assistant text", () => {
   const result = makeResult();
   result.exitCode = 1;

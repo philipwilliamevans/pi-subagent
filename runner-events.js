@@ -85,6 +85,14 @@ export function processPiEvent(event, result) {
     case "turn_end":
       return addAssistantMessage(result, event.message);
 
+    case "agent_start":
+    case "turn_start":
+      // Pi has started a new agent cycle (e.g., auto-retry after a transient
+      // model error). Clear the semantic-completion flag so the runner does
+      // not treat the previous agent_end as terminal.
+      result.sawAgentEnd = false;
+      return false;
+
     case "agent_end":
       result.sawAgentEnd = true;
       return addAssistantMessages(result, event.messages);

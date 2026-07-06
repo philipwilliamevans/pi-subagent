@@ -164,6 +164,11 @@ Use the \`subagent_start\` tool to fire-and-forget work in the background.
 The tool returns immediately; results arrive via an auto-injected message.
 By default the completion auto-triggers a parent turn — just omit \`onComplete\`.
 
+**Fire-and-forget rule:** After calling \`subagent_start\`, end your turn.
+Do not poll \`subagent_status\` waiting for results. The auto-injected
+completion message will wake you when the job finishes. If you need
+to check progress once, that is fine — but do not loop.
+
 Check status anytime with \`subagent_status\` (omit \`jobId\` to list all).
 Peek at live activity with \`subagent_peek\` when you need to see what a
 running background subagent is currently doing.
@@ -236,6 +241,10 @@ export function formatSubagentStartToolDescription(): string {
     "",
     "By default, completion auto-triggers a parent turn — just omit `onComplete`.",
     "",
+    "> **Important:** After starting background jobs, **end your turn immediately.**",
+    "> Do not poll `subagent_status`. A completion message will be auto-injected",
+    "> when the job finishes and will trigger a new assistant turn automatically.",
+    "",
     "Background jobs run in the same working tree and may edit files concurrently.",
     "Give each call a clearly disjoint scope.",
     "",
@@ -279,6 +288,9 @@ export function formatSubagentStartToolDescription(): string {
     `- Maximum ${2} concurrent background jobs.`,
     "- `initialContext: \"parent\"` is not yet supported.",
     "",
+    "Agent behavior:",
+    "- After starting background jobs, end your turn. Do not poll. The auto-injected completion message will deliver results.",
+    "",
     "Shared-worktree safety:",
     "  - Use \`subagent_status\` to check running jobs before making parent edits.",
     "  - Use \`subagent_result\` to review full output before integrating changes.",
@@ -299,6 +311,9 @@ export function formatSubagentStatusToolDescription(): string {
     "",
     "Provide a `jobId` to inspect a specific job. Omit `jobId` to list all known jobs.",
     "Read-only. No confirmation needed.",
+    "",
+    "> **Do not poll in a loop.** After starting background jobs with `subagent_start`,",
+    "> end your turn and wait for the auto-injected completion message.",
     "",
     "Examples:",
     '  { "jobId": "subjob_abc123" }',

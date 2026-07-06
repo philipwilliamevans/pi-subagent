@@ -36,6 +36,19 @@ const PERSISTENT_SESSION_EXIT_TIMEOUT_MS = 30_000;
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 export type OnEventCallback = (event: unknown, rawLine: string) => void;
 
+/**
+ * Quick JSON-type check for Pi lifecycle events that signal a new agent
+ * cycle has begun (typically after an auto-retry from a transient error).
+ */
+export function isNewAgentCycle(line: string): boolean {
+  try {
+    const event = JSON.parse(line);
+    return event.type === "agent_start" || event.type === "turn_start";
+  } catch {
+    return false;
+  }
+}
+
 export function processRunnerJsonLine(
   line: string,
   result: SingleResult,
@@ -456,6 +469,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       };
 
       const flushLine = (line: string) => {
+        // If Pi starts a new cycle after agent_end (auto-retry), cancel the
+        // named-session exit timer so the retry gets a full timeout window.
+        if (session && isNewAgentCycle(line)) {
+          clearPersistentSessionExitTimer();
+        }
         if (processRunnerJsonLine(line, result, onEvent)) emitUpdate();
         maybeFinishFromAgentEnd();
       };
