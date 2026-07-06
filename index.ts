@@ -39,6 +39,8 @@ import {
   formatSubagentPeekToolDescription,
   formatSubagentResultToolDescription,
   formatSubagentStartToolDescription,
+  formatSubagentEnqueueToolDescription,
+  formatSubagentGetPlanToolDescription,
   formatSubagentStatusToolDescription,
   formatSubagentToolDescription,
   formatSubagentUsageErrorExample,
@@ -47,6 +49,8 @@ import {
 import {
   formatBackgroundCompletion,
   formatBackgroundEscalation,
+  formatPlanDetail,
+  formatPlanFired,
   formatJobPeek,
   formatJobList,
   formatJobResults,
@@ -71,6 +75,16 @@ import {
   markPendingCallsCancelled,
   finishCallState,
 } from "./background-lifecycle.js";
+import {
+  getPendingPlans,
+  getPlan,
+  registerPlan,
+  setPlanStoreBaseDir,
+  reloadPersistedPlans,
+  arePlanDepsTerminal,
+  updatePlanStatus,
+  purgeOldPlans,
+} from "./plan-queue.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
 import { getResultSummaryText } from "./runner-events.js";
 import { mapConcurrent, runAgent } from "./runner.js";
@@ -89,6 +103,7 @@ import {
   type CallState,
   type InitialContext,
   type NormalizedCall,
+  type QueuedPlan,
   type SingleResult,
   type SubagentDetails,
   type SubagentSessionDetails,
@@ -101,6 +116,7 @@ import {
   formatBackgroundEscalationDetails,
   formatSubagentContinueAcknowledgement,
   getFinalOutput,
+  isJobTerminal,
   isResultError,
   isResultSuccess,
   recordBackgroundEscalationAnswer,
@@ -304,6 +320,31 @@ const SubagentCancelParams = Type.Object({
       default: false,
     }),
   ),
+});
+
+const SubagentEnqueueParams = Type.Object({
+  plan: Type.String({
+    description:
+      "The plan text describing what to do with the results. Written as if reminding the agent what it intended.",
+  }),
+  dependsOn: Type.Array(Type.String, {
+    description:
+      "One or more background job IDs to wait on. All must reach a terminal state before the plan fires.",
+    minItems: 1,
+  }),
+  replace: Type.Optional(
+    Type.Boolean({
+      description:
+        "If true, replace any existing queued plan that depends on exactly the same job ID set.",
+      default: false,
+    }),
+  ),
+});
+
+const SubagentGetPlanParams = Type.Object({
+  planId: Type.String({
+    description: "ID of the plan to retrieve (e.g. plan_ce19fdf0).",
+  }),
 });
 
 // ---------------------------------------------------------------------------
@@ -985,15 +1026,50 @@ export default function (pi: ExtensionAPI) {
 
   // Initialize background job persistence and auto-discover agents on session start.
   pi.on("session_start", async (_event, ctx) => {
-    // Set up the persistent job store under the project's .pi-subagent directory.
+    // Set up the persistent job and plan stores under the project's .pi-subagent directory.
     setJobStoreBaseDir(ctx.cwd);
-    const reloadedCount = reloadPersistedJobs();
-    if (reloadedCount > 0) {
-      const label = reloadedCount === 1 ? "job" : "jobs";
-      const message = `Reloaded ${reloadedCount} persisted background ${label}. Use \`subagent_status\` to inspect.`;
+    setPlanStoreBaseDir(ctx.cwd);
+    const reloadedJobs = reloadPersistedJobs();
+    const reloadedPlans = reloadPersistedPlans();
+    if (reloadedJobs > 0) {
+      const label = reloadedJobs === 1 ? "job" : "jobs";
+      const message = `Reloaded ${reloadedJobs} persisted background ${label}. Use \`subagent_status\` to inspect.`;
       if (ctx.hasUI) {
         ctx.ui.notify(message, "info");
       }
+    }
+    if (reloadedPlans > 0) {
+      const label = reloadedPlans === 1 ? "plan" : "plans";
+      const message = `Reloaded ${reloadedPlans} persisted queued ${label}.`;
+      if (ctx.hasUI) {
+        ctx.ui.notify(message, "info");
+      }
+
+      // Fire any pending plans whose dependencies completed in a previous session.
+      const pendingPlans = getPendingPlans();
+      for (const plan of pendingPlans) {
+        const { ready, details } = arePlanDepsTerminal(plan, getBackgroundJob);
+        if (!ready) continue;
+        updatePlanStatus(plan.id, "fired");
+        const depDetails = details.map((d) => {
+          const job = getBackgroundJob(d.id);
+          const resultCount = job?.results?.length ?? 0;
+          return {
+            ...d,
+            summary: resultCount > 0 ? `${resultCount} result${resultCount === 1 ? "" : "s"}` : undefined,
+          };
+        });
+        pi.sendMessage(
+          {
+            customType: "subagent-plan-fired",
+            display: true,
+            content: [{ type: "text", text: formatPlanFired(plan, depDetails) }],
+            details: { planId: plan.id, plan: plan.plan },
+          },
+          { deliverAs: "followUp", triggerTurn: false },
+        );
+      }
+      purgeOldPlans();
     }
 
     if (!canDelegate) return;
@@ -2184,6 +2260,112 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       renderResult: (result, { expanded }, theme) =>
         renderSubagentResultResult(result, expanded, theme),
     });
+
+    // -----------------------------------------------------------------------
+    // subagent_enqueue — store a plan to fire when background jobs complete
+    // -----------------------------------------------------------------------
+
+    pi.registerTool({
+      name: "subagent_enqueue",
+      label: "Subagent enqueue plan",
+      description: formatSubagentEnqueueToolDescription(),
+      parameters: SubagentEnqueueParams,
+
+      async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+        // Validate dependsOn job IDs exist
+        const unknownJobs: string[] = [];
+        for (const jobId of params.dependsOn) {
+          const job = getBackgroundJob(jobId);
+          if (!job) {
+            unknownJobs.push(jobId);
+          }
+        }
+
+        if (unknownJobs.length > 0) {
+          const known = getAllBackgroundJobs()
+            .map((j) => `  ${j.id} (${j.status})`)
+            .join("\n");
+          const hint = known ? `Known jobs:\n${known}` : "No background subagent jobs.";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Unknown background job${unknownJobs.length === 1 ? "" : "s"}: ${unknownJobs.join(", ")}.\n${hint}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Register the plan
+        const plan = registerPlan(
+          params.plan,
+          params.dependsOn,
+          params.replace === true,
+        );
+
+        // Check if all deps are already terminal — fire immediately
+        const { ready, details } = arePlanDepsTerminal(plan, getBackgroundJob);
+
+        if (ready) {
+          updatePlanStatus(plan.id, "fired");
+          purgeOldPlans();
+
+          // Build dependency summaries
+          const depDetails = details.map((d) => ({
+            ...d,
+            summary: getBackgroundJob(d.id)?.results
+              ? `${getBackgroundJob(d.id)!.results!.length} result${getBackgroundJob(d.id)!.results!.length === 1 ? "" : "s"}`
+              : undefined,
+          }));
+
+          const planMessage = formatPlanFired(plan, depDetails);
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Queued plan \`${plan.id}\` — all dependencies are already terminal, plan fired immediately.\n\n${planMessage}`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Queued plan \`${plan.id}\` with ${plan.dependsOn.length} dependenc${plan.dependsOn.length === 1 ? "y" : "ies"}. The plan will fire when all background jobs complete.\n\nPlan: "${plan.plan}"`,
+            },
+          ],
+        };
+      },
+    });
+
+    // -----------------------------------------------------------------------
+    // subagent_get_plan — retrieve stored plan text
+    // -----------------------------------------------------------------------
+
+    pi.registerTool({
+      name: "subagent_get_plan",
+      label: "Subagent get plan",
+      description: formatSubagentGetPlanToolDescription(),
+      parameters: SubagentGetPlanParams,
+
+      async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+        const plan = getPlan(params.planId);
+        if (!plan) {
+          return {
+            content: [{ type: "text", text: `Unknown plan: \`${params.planId}\`. Use \`subagent_status\` to list active plans.` }],
+            isError: true,
+          };
+        }
+
+        return {
+          content: [{ type: "text", text: formatPlanDetail(plan) }],
+        };
+      },
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -2379,6 +2561,60 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         triggerTurn: job.onComplete === "trigger",
       },
     );
+
+    // After the job completion message, check if any queued plans are now ready to fire.
+    processPlanQueue(job.id);
+  }
+
+  /**
+   * Check all pending plans whose dependencies include the given completed job ID.
+   * If all deps of a plan are terminal, mark the plan as fired and inject a consolidated
+   * plan-fired message into the parent session.
+   */
+  function processPlanQueue(completedJobId: string): void {
+    const pendingPlans = getPendingPlans();
+    if (pendingPlans.length === 0) return;
+
+    for (const plan of pendingPlans) {
+      if (!plan.dependsOn.includes(completedJobId)) continue;
+
+      const { ready, details } = arePlanDepsTerminal(plan, getBackgroundJob);
+      if (!ready) continue;
+
+      // Mark as fired
+      updatePlanStatus(plan.id, "fired");
+
+      // Build dependency summaries with result sizes
+      const depDetails = details.map((d) => {
+        const job = getBackgroundJob(d.id);
+        const resultCount = job?.results?.length ?? 0;
+        const summary =
+          resultCount > 0
+            ? `${resultCount} result${resultCount === 1 ? "" : "s"}`
+            : undefined;
+        return { ...d, summary };
+      });
+
+      // Inject plan-fired message (non-triggering — the job completion already wakes the agent)
+      pi.sendMessage(
+        {
+          customType: "subagent-plan-fired",
+          display: true,
+          content: [{ type: "text", text: formatPlanFired(plan, depDetails) }],
+          details: {
+            planId: plan.id,
+            plan: plan.plan,
+          },
+        },
+        {
+          deliverAs: "followUp",
+          triggerTurn: false,
+        },
+      );
+    }
+
+    // Clean up old fired plans from disk
+    purgeOldPlans();
   }
 
   function emitTerminalSubagentLifecycleEvent(job: BackgroundJob): void {

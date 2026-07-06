@@ -108,6 +108,17 @@ export interface BackgroundEscalation {
 	answer?: string;
 }
 
+/** A plan queued to fire when background jobs complete. */
+export interface QueuedPlan {
+  id: string;
+  plan: string;
+  dependsOn: string[];
+  replace: boolean;
+  status: "pending" | "ready" | "fired";
+  createdAt: number;
+  firedAt?: number;
+}
+
 /** Compatibility alias for older code paths that used "input request". */
 export type BackgroundInputRequest = BackgroundEscalation;
 
@@ -357,6 +368,11 @@ export function upsertBackgroundEscalation(
 	return next;
 }
 
+/** Whether a background job status is terminal (no further state transitions expected). */
+export function isJobTerminal(status: BackgroundJobStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted";
+}
+
 /** Parent-facing acknowledgement after routing a user reply to a parked subagent. */
 export function formatSubagentContinueAcknowledgement(agent: string): string {
 	return `Sent that direction to the waiting ${agent} subagent.\n\nThe subagent will continue in the same session. I will report back when it finishes or asks another question.`;
@@ -400,6 +416,9 @@ export function getDisplayItems(messages: Message[]): DisplayItem[] {
 
 /** Maximum allowed value for maxOutputLength in subagent_result. */
 export const MAX_OUTPUT_LENGTH_LIMIT = 50000;
+
+/** Maximum number of persisted fired plans to keep for debugging. */
+export const MAX_PERSISTED_PLANS = 50;
 
 /** Maximum number of raw events returned by subagent_peek. */
 export const MAX_PEEK_EVENTS_LIMIT = 200;

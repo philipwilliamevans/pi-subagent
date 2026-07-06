@@ -208,6 +208,29 @@ and can edit files concurrently with the parent or sibling jobs. Always:
 - Use \`subagent_result\` to review full output before integrating.
 - Note the job ID at start time for later queries.
 
+### Plan queue
+
+Use \`subagent_enqueue\` to store a plan that fires when background jobs
+complete. The plan is stored and fires when all background jobs reach a
+terminal state.
+
+**When a plan fires, you do not see the plan text.** The auto-injected
+message only notifies you that a plan is ready. It will say:
+
+> "A queued plan (plan_xxx) is now ready."
+
+This is intentional: the plan text is hidden to prevent you from executing
+it without the user's consent.
+
+Always ask the user if they still want the plan executed before proceeding.
+Their priorities may have changed since the plan was queued.
+
+If the user is interested or confirms, retrieve the plan text with:
+\`subagent_get_plan\` with the plan ID shown in the notification.
+
+Never include the plan text in your response until the user has asked about
+it or explicitly confirmed they want it executed.
+
 ### Runtime delegation guards
 
 - Max depth: current depth ${guards.currentDepth}, max depth ${guards.maxDepth}
@@ -372,6 +395,41 @@ export function formatSubagentContinueToolDescription(): string {
     '  { "jobId": "subjob_abc123", "prompt": "Explore option 2." }',
     '  { "escalationId": "esc_abc123", "prompt": "Explore option 2." }',
     '  { "jobId": "subjob_abc123", "callIndex": 0, "prompt": "Go deeper on cleanup risk." }',
+  ].join("\n");
+}
+
+export function formatSubagentEnqueueToolDescription(): string {
+  return [
+    "Store a plan to be executed when background subagent jobs complete.",
+    "",
+    "The plan is stored verbatim but is NOT shown in the auto-injected",
+    "completion message. This is intentional: you must ask the user first,",
+    "then retrieve the plan text with \`subagent_get_plan\` if they confirm.",
+    "",
+    "When the plan fires, ask the user if they still want it done before",
+    "proceeding. Use \`subagent_get_plan\` with the plan ID shown in the",
+    "notification to retrieve the plan text when needed.",
+    "",
+    "If \`replace: true\`, any existing queued plan for the same job set is",
+    "replaced with this one.",
+    "",
+    "Example:",
+    '  { "plan": "Compile the results into REPORT.md",',
+    '    "dependsOn": ["subjob_abc123", "subjob_def456"],',
+    '    "replace": true }',
+  ].join("\n");
+}
+
+export function formatSubagentGetPlanToolDescription(): string {
+  return [
+    "Retrieve the full plan text for a previously queued plan.",
+    "",
+    "The plan text is intentionally hidden from auto-injected messages",
+    "to prevent premature execution. Use this tool when the user is",
+    "interested in what the plan was, or has confirmed they want it executed.",
+    "",
+    "Example:",
+    '  { "planId": "plan_ce19fdf0" }',
   ].join("\n");
 }
 

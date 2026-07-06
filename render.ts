@@ -1168,6 +1168,52 @@ export function renderContinueResult(
 }
 
 // ---------------------------------------------------------------------------
+// Plan queue rendering
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a consolidated plan-fired message for injection into the parent session.
+ *
+ * Shows the original plan text alongside the status of each dependency,
+ * and instructs the agent to ask the user before proceeding.
+ */
+export function formatPlanFired(
+  plan: { id: string; plan: string },
+  depDetails: { id: string; status: string; summary?: string }[],
+): string {
+  const lines: string[] = [
+    `📋 A queued plan (\`${plan.id}\`) is now ready.`,
+    "",
+    "The required jobs have completed:",
+  ];
+
+  for (const dep of depDetails) {
+    const label = dep.summary ? ` (${dep.summary})` : "";
+    lines.push(`  ${dep.id} — ${dep.status}${label}`);
+  }
+
+  lines.push(
+    "",
+    "Ask the user if they still want this done before proceeding.",
+    "Do NOT include the plan details in your response yet.",
+    "If the user is interested, use \`subagent_get_plan\` to retrieve the plan text and share it.",
+  );
+
+  return lines.join("\n");
+}
+
+/**
+ * Format the full plan text for retrieval via subagent_get_plan.
+ */
+export function formatPlanDetail(plan: { id: string; plan: string }): string {
+  return [
+    `Plan \`${plan.id}\`:`, 
+    "",
+    plan.plan,
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Render for subagent_cancel
 // ---------------------------------------------------------------------------
 
