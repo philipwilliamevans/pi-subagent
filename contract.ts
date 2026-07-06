@@ -173,13 +173,16 @@ Retrieve the full output from a completed job using \`subagent_result\`.
 The auto-injected message includes a compact excerpt; use \`subagent_result\`
 when you need the complete response text.
 
-For interactive background jobs, set top-level \`awaitMarker\` and instruct
-the subagent to end with that exact marker when it needs user direction.
-The job parks as \`needs_input\`; continue it with \`subagent_continue\`.
+For interactive background jobs, set top-level \`interactive: true\`.
+The extension will instruct the subagent how to pause for user direction.
+When the job parks as \`needs_input\`, route the user's natural reply to
+\`subagent_continue\`; do not ask the user to mention a job ID or marker.
+\`awaitMarker\` exists only as an advanced/debug override.
 
 Background jobs do not support caller-supplied persistent sessions (\`session\`).
 Omit \`session\` for background delegation. Jobs that use \`awaitMarker\`
 create an internal job-owned child session for continuation.
+Jobs that use \`interactive: true\` do the same without exposing the marker.
 
 **Important:** Background jobs run in the same working tree by default
 and can edit files concurrently with the parent or sibling jobs. Always:
@@ -246,16 +249,21 @@ export function formatSubagentStartToolDescription(): string {
     "    Helps identify potential conflicts between concurrent background jobs.",
     "  - This is also top-level, not per-call.",
     "",
+    "Optional top-level field `interactive` (default: false):",
+    "  - Set to true when the subagent may need to pause and ask the user for direction.",
+    "  - The extension handles the internal wait marker and child prompt instructions.",
+    "  - When the job parks as `needs_input`, continue the same child session with `subagent_continue`.",
+    "",
     "Optional top-level field `awaitMarker`:",
-    '  - A non-empty string such as "AWAITING_CHOICE".',
+    "  - Advanced/debug override for the internal wait marker.",
     "  - When a successful single-call job's final output contains this marker,",
     "    the job parks as `needs_input` instead of completing.",
-    "  - Continue the same child session with `subagent_continue`.",
+    "  - Prefer `interactive: true` for ordinary interactive background jobs.",
     "",
     "Restrictions:",
     "- Only available from the root parent Pi session (not from subagents).",
     "- Caller-supplied persistent sessions (`session`) are not supported in background mode.",
-    "- `awaitMarker` is currently single-call only.",
+    "- `interactive: true` and `awaitMarker` are currently single-call only.",
     `- Maximum ${2} concurrent background jobs.`,
     "- `initialContext: \"parent\"` is not yet supported.",
     "",
@@ -267,6 +275,9 @@ export function formatSubagentStartToolDescription(): string {
     "",
     "Example (onComplete defaults to trigger, so you can omit it):",
     '  { "calls": [{ "agent": "explorer", "prompt": "Find all test files" }] }',
+    "",
+    "Interactive example:",
+    '  { "interactive": true, "calls": [{ "agent": "explorer", "prompt": "Inspect runner.ts and offer three follow-up directions." }] }',
   ].join("\n");
 }
 
@@ -324,9 +335,9 @@ export function formatSubagentContinueToolDescription(): string {
   return [
     "Continue a background subagent job that is parked in `needs_input`.",
     "",
-    "Use this after `subagent_start` was called with `awaitMarker` and the",
-    "subagent stopped to ask for direction. The prompt is sent to the same",
-    "job-owned child session.",
+    "Use this after an interactive `subagent_start` job stops to ask for",
+    "direction. The prompt is sent to the same job-owned child session.",
+    "Parent agents should route the user's natural reply here silently.",
     "",
     "Examples:",
     '  { "jobId": "subjob_abc123", "prompt": "Explore option 2." }',

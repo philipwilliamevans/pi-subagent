@@ -52,6 +52,16 @@ function truncate(text: string, maxLen: number): string {
 	return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
 }
 
+function stripInteractiveMarker(text: string, marker: string | undefined): string {
+	if (!marker) return text;
+	return text.split(marker).join("").replace(/[ \t]+\n/g, "\n").trimEnd();
+}
+
+function getBackgroundResultSummary(job: BackgroundJob, result: SingleResult): string {
+	const summary = getResultSummaryText(result);
+	return job.interactive ? stripInteractiveMarker(summary, job.awaitMarker) : summary;
+}
+
 function shortenPath(p: string): string {
 	const home = os.homedir();
 	return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
@@ -419,7 +429,7 @@ export function formatBackgroundCompletion(job: BackgroundJob): string {
 		for (const [index, r] of job.results.entries()) {
 			const callStatus = formatCallStatusLabel(r);
 			const agentName = r.agent || job.calls[index]?.agent || `call ${index}`;
-			const summary = getResultSummaryText(r);
+			const summary = getBackgroundResultSummary(job, r);
 
 			// Tool call count and output size in the per-call header
 			const displayItems = getDisplayItems(r.messages);
@@ -442,9 +452,12 @@ export function formatBackgroundCompletion(job: BackgroundJob): string {
 	}
 
 	if (isParkedJob(job) && job.waitingForInput) {
+		const waitingText = job.interactive
+			? `Waiting on call ${job.waitingForInput.callIndex} for user direction.`
+			: `Waiting on call ${job.waitingForInput.callIndex} at marker \`${job.waitingForInput.marker}\`.`;
 		lines.push(
 			"",
-			`Waiting on call ${job.waitingForInput.callIndex} at marker \`${job.waitingForInput.marker}\`.`,
+			waitingText,
 			`Continue with \`subagent_continue\` using jobId \`${job.id}\`.`,
 		);
 	}
@@ -552,7 +565,9 @@ export function formatJobStatus(job: BackgroundJob): string {
 
 	const waitingLines = job.status === "needs_input" && job.waitingForInput
 		? [
-			`  Waiting on call ${job.waitingForInput.callIndex} at marker \`${job.waitingForInput.marker}\``,
+			job.interactive
+				? `  Waiting on call ${job.waitingForInput.callIndex} for user direction`
+				: `  Waiting on call ${job.waitingForInput.callIndex} at marker \`${job.waitingForInput.marker}\``,
 			`  Continue: subagent_continue({ jobId: "${job.id}", prompt: "..." })`,
 		]
 		: [];
@@ -654,7 +669,7 @@ export function formatJobResults(
 			continue;
 		}
 
-		const summary = getResultSummaryText(r);
+		const summary = getBackgroundResultSummary(job, r);
 		const items = includeToolCalls ? getDisplayItems(r.messages) : [];
 
 		const headingStatus =

@@ -11,6 +11,20 @@ export type InitialContext = "empty" | "parent";
 /** Default initial context for delegated calls. */
 export const DEFAULT_INITIAL_CONTEXT: InitialContext = "empty";
 
+/** Default internal marker used by interactive background jobs. */
+export const DEFAULT_INTERACTIVE_AWAIT_MARKER = "AWAITING_SUBAGENT_INPUT";
+
+/** Append instructions that let an interactive subagent park for parent input. */
+export function appendInteractiveWaitInstructions(prompt: string, marker: string): string {
+	return `${prompt}
+
+When you need the user's choice, clarification, approval, or direction before continuing:
+- Ask a concise question.
+- Include the relevant options or tradeoffs when helpful.
+- Stop after asking the question.
+- End your final line with exactly: ${marker}`;
+}
+
 /** Metadata for a named persistent subagent session. */
 export interface SubagentSessionDetails {
 	handle: string;
@@ -110,6 +124,8 @@ export interface BackgroundJob {
 	worktreeMetadata?: WorktreeMetadata;
 	/** Marker that parks the job in needs_input when seen in successful output. */
 	awaitMarker?: string;
+	/** Whether awaitMarker was configured by the semantic interactive mode. */
+	interactive?: boolean;
 	/** Current input request when the job is parked awaiting user direction. */
 	waitingForInput?: BackgroundInputRequest;
 }

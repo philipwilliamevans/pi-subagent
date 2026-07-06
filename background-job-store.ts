@@ -61,6 +61,7 @@ interface PersistedJobState {
   worktreeScope?: string;
   worktreeMetadata?: WorktreeMetadata;
   awaitMarker?: string;
+  interactive?: boolean;
   waitingForInput?: BackgroundInputRequest;
 }
 
@@ -152,6 +153,7 @@ function hydrateJob(state: PersistedJobState): BackgroundJob {
     worktreeScope: state.worktreeScope,
     worktreeMetadata: state.worktreeMetadata,
     awaitMarker: state.awaitMarker,
+    interactive: state.interactive,
     waitingForInput: state.waitingForInput,
     // Unserializable — set to safe defaults
     promise: Promise.resolve(),
@@ -186,6 +188,7 @@ function serializeJob(job: BackgroundJob): PersistedJobState {
     worktreeScope: job.worktreeScope,
     worktreeMetadata: job.worktreeMetadata,
     awaitMarker: job.awaitMarker,
+    interactive: job.interactive,
     waitingForInput: job.waitingForInput,
   };
 }

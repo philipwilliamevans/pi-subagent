@@ -91,6 +91,8 @@ import {
   type SubagentSessionDetails,
   type WorktreeMode,
   DEFAULT_INITIAL_CONTEXT,
+  DEFAULT_INTERACTIVE_AWAIT_MARKER,
+  appendInteractiveWaitInstructions,
   emptyUsage,
   getFinalOutput,
   isResultError,
@@ -185,10 +187,17 @@ const SubagentStartParams = Type.Object({
         'Optional file/path scope declaration for this job, e.g. "src/*.ts" or "docs/". Helps identify potential conflicts between concurrent jobs.',
     }),
   ),
+  interactive: Type.Optional(
+    Type.Boolean({
+      description:
+        "When true, the subagent may stop to ask the user for direction. The extension handles the internal wait marker automatically.",
+      default: false,
+    }),
+  ),
   awaitMarker: Type.Optional(
     Type.String({
       description:
-        'Optional marker such as "AWAITING_CHOICE". For single-call jobs, successful output containing this marker parks the job as needs_input for subagent_continue.',
+        "Advanced/debug marker override. For single-call jobs, successful output containing this marker parks the job as needs_input for subagent_continue.",
     }),
   ),
 });
@@ -753,7 +762,7 @@ function getBackgroundSessionParentError(ctx: ExtensionExecutionContext): string
     return "Interactive background subagent jobs are not available from temporary parent-seeded subagent sessions.";
   }
   if (ctx.sessionManager.getSessionFile()) return null;
-  return "Interactive background subagent jobs require a persisted parent Pi session. Run the parent without --no-session, or omit `awaitMarker` for a non-interactive background job.";
+  return "Interactive background subagent jobs require a persisted parent Pi session. Run the parent without --no-session, or omit `interactive`/`awaitMarker` for a non-interactive background job.";
 }
 
 function assignBackgroundOwnedSessions(
@@ -1375,12 +1384,21 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           };
         }
         const calls = normalized.calls;
-        const awaitMarker = typeof params.awaitMarker === "string"
+        const interactive = params.interactive === true;
+        const callerAwaitMarker = typeof params.awaitMarker === "string"
           ? params.awaitMarker.trim()
           : undefined;
-        if (params.awaitMarker !== undefined && !awaitMarker) {
+        if (params.awaitMarker !== undefined && !callerAwaitMarker) {
           return {
             content: [{ type: "text", text: "`awaitMarker` must be a non-empty string when provided." }],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+        const awaitMarker = callerAwaitMarker ?? (interactive ? DEFAULT_INTERACTIVE_AWAIT_MARKER : undefined);
+        if (interactive && calls.length !== 1) {
+          return {
+            content: [{ type: "text", text: "`interactive: true` is currently supported only for single-call background jobs." }],
             details: makeDetails([]),
             isError: true,
           };
@@ -1410,13 +1428,22 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
               content: [
                 {
                   type: "text",
-                  text: `Background subagent calls cannot use persistent sessions. calls[${call.index}] specifies session="${call.sessionHandle}". Omit \`session\` for background delegation.`,
+                  text: `Background subagent calls cannot use caller-supplied persistent sessions. calls[${call.index}] specifies session="${call.sessionHandle}". Omit \`session\` for background delegation; interactive jobs create their own child session automatically.`,
                 },
               ],
               details: makeDetails([]),
               isError: true,
             };
           }
+        }
+
+        const displayCalls = calls.map((call) => ({
+          agent: call.agent,
+          prompt: call.prompt,
+        }));
+
+        if (interactive) {
+          calls[0].prompt = appendInteractiveWaitInstructions(calls[0].prompt, awaitMarker!);
         }
 
         // --- Reject initialContext "parent" when no snapshot possible ---
@@ -1539,6 +1566,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           worktreeMode,
           worktreeScope: params.worktreeScope,
           awaitMarker,
+          interactive,
         };
 
         // Populate promise with async execution.
@@ -1554,7 +1582,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         registerBackgroundJob(job);
 
         // --- Immediate return ---
-        const callList = calls
+        const callList = displayCalls
           .map((c) => `  - ${c.agent}: ${c.prompt.slice(0, 60)}${c.prompt.length > 60 ? "..." : ""}`)
           .join("\n");
 
@@ -1571,7 +1599,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           content: [
             {
               type: "text",
-              text: `Started background subagent job \`${jobId}\` with ${calls.length} call${calls.length === 1 ? "" : "s"}.\n\n${callList}\n\n${awaitMarker ? `This job will park at \`${awaitMarker}\` and wait for \`subagent_continue\`.` : "The result will be posted to this session when complete."}\n\n${worktreeNote}`,
+              text: `Started background subagent job \`${jobId}\` with ${calls.length} call${calls.length === 1 ? "" : "s"}.\n\n${callList}\n\n${interactive ? "This interactive job will pause for user direction if needed." : awaitMarker ? "This job will pause for `subagent_continue` if it reaches its configured wait point." : "The result will be posted to this session when complete."}\n\n${worktreeNote}`,
             },
           ],
           details: makeDetails([]),

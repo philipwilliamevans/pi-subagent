@@ -261,6 +261,41 @@ test("formatBackgroundCompletion shows needs_input state", async () => {
   }
 });
 
+test("formatBackgroundCompletion hides marker plumbing for interactive jobs", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatBackgroundCompletion } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_wait_interactive",
+      createdAt: Date.now() - 8000,
+      updatedAt: Date.now(),
+      status: "needs_input",
+      onComplete: "trigger",
+      interactive: true,
+      awaitMarker: "AWAITING_SUBAGENT_INPUT",
+      calls: [{ index: 0, agent: "explorer", prompt: "Offer options", effectiveCwd: "/tmp", initialContext: "empty" }],
+      callStates: [{ phase: "needs_input", startedAt: Date.now() - 8000, completedAt: Date.now() - 1000, toolCalls: 0, recentActivity: [] }],
+      waitingForInput: { callIndex: 0, marker: "AWAITING_SUBAGENT_INPUT", updatedAt: Date.now() },
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Offer options", initialContext: "empty",
+        exitCode: 0,
+        messages: [{ role: "assistant", content: [{ type: "text", text: "Which direction should I inspect?\nAWAITING_SUBAGENT_INPUT" }], timestamp: 1 }],
+        stderr: "",
+        usage: { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatBackgroundCompletion(job);
+    assert.match(text, /is awaiting input/);
+    assert.match(text, /Waiting on call 0 for user direction/);
+    assert.match(text, /Which direction should I inspect\?/);
+    assert.doesNotMatch(text, /AWAITING_SUBAGENT_INPUT/);
+  } finally {
+    cleanup();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // FormatJobStatus
 // ---------------------------------------------------------------------------
@@ -864,6 +899,37 @@ test("formatJobResults returns full output for completed job", async () => {
     assert.match(text, /## explorer/);
     assert.match(text, /completed/);
     assert.match(text, /Full analysis report here/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobResults hides marker plumbing for interactive jobs", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobResults } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_result_interactive",
+      createdAt: Date.now() - 8000,
+      updatedAt: Date.now(),
+      status: "needs_input",
+      interactive: true,
+      awaitMarker: "AWAITING_SUBAGENT_INPUT",
+      waitingForInput: { callIndex: 0, marker: "AWAITING_SUBAGENT_INPUT", updatedAt: Date.now() },
+      calls: [{ index: 0, agent: "explorer", prompt: "Offer options", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Offer options", initialContext: "empty",
+        exitCode: 0,
+        messages: [{ role: "assistant", content: [{ type: "text", text: "Choose one option.\nAWAITING_SUBAGENT_INPUT" }], timestamp: 1 }],
+        stderr: "",
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatJobResults(job, {});
+    assert.match(text, /Choose one option/);
+    assert.doesNotMatch(text, /AWAITING_SUBAGENT_INPUT/);
   } finally {
     cleanup();
   }

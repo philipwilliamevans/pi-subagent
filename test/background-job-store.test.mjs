@@ -149,6 +149,7 @@ test("persistJobState round-trips needs_input metadata", () => {
     const job = makeMinimalJob("subjob_waiting_001", "needs_input", {
       callStates: [{ phase: "needs_input", toolCalls: 0, recentActivity: [], completedAt: 12345 }],
       awaitMarker: "AWAITING_CHOICE",
+      interactive: true,
       waitingForInput: { callIndex: 0, marker: "AWAITING_CHOICE", updatedAt: 12345 },
     });
 
@@ -158,6 +159,7 @@ test("persistJobState round-trips needs_input metadata", () => {
     assert.ok(loaded);
     assert.equal(loaded.status, "needs_input");
     assert.equal(loaded.awaitMarker, "AWAITING_CHOICE");
+    assert.equal(loaded.interactive, true);
     assert.deepEqual(loaded.waitingForInput, {
       callIndex: 0,
       marker: "AWAITING_CHOICE",

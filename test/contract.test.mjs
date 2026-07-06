@@ -3,9 +3,14 @@ import assert from "node:assert/strict";
 import {
   CALL_FIELDS,
   formatAvailableSubagentsPrompt,
+  formatSubagentStartToolDescription,
   formatSubagentToolDescription,
   getCallFieldSchemaDescription,
 } from "../contract.ts";
+import {
+  DEFAULT_INTERACTIVE_AWAIT_MARKER,
+  appendInteractiveWaitInstructions,
+} from "../types.ts";
 
 const agents = [
   {
@@ -61,4 +66,23 @@ test("available subagent prompt labels agent source and guard state", () => {
   assert.match(prompt, /Project agents come from this repository/);
   assert.match(prompt, /Max depth: current depth 1, max depth 3/);
   assert.match(prompt, /Current delegation stack: review/);
+});
+
+test("background contract prefers interactive mode over marker plumbing", () => {
+  const combined = `${makePrompt()}\n${formatSubagentStartToolDescription()}`;
+
+  assert.match(combined, /interactive: true/);
+  assert.match(combined, /advanced\/debug override/i);
+  assert.match(combined, /route the user's natural reply/i);
+});
+
+test("appendInteractiveWaitInstructions adds default wait guidance", () => {
+  const prompt = appendInteractiveWaitInstructions(
+    "Inspect runner.ts and offer options.",
+    DEFAULT_INTERACTIVE_AWAIT_MARKER,
+  );
+
+  assert.match(prompt, /^Inspect runner\.ts and offer options\./);
+  assert.match(prompt, /Ask a concise question/);
+  assert.match(prompt, new RegExp(`End your final line with exactly: ${DEFAULT_INTERACTIVE_AWAIT_MARKER}`));
 });
