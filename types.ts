@@ -134,6 +134,9 @@ export interface BackgroundOpenEscalation {
 
 /** In-memory background job tracking entry. */
 export interface BackgroundJob {
+	/** Structured artifacts produced by this job. */
+	artifacts?: BackgroundArtifact[];
+
 	id: string;
 	createdAt: number;
 	updatedAt: number;
@@ -165,6 +168,29 @@ export interface BackgroundJob {
 	escalations?: BackgroundEscalation[];
 	/** Current input request when the job is parked awaiting user direction. */
 	waitingForInput?: BackgroundEscalation;
+}
+
+/** Kinds of artifacts a background job can produce. */
+export type BackgroundArtifactKind =
+  | "result"
+  | "event_journal"
+  | "worktree"
+  | "branch"
+  | "patch"
+  | "changed_files"
+  | "escalation"
+  | "plan";
+
+/** A structured artifact produced by a background job. */
+export interface BackgroundArtifact {
+  id: string;
+  kind: BackgroundArtifactKind;
+  label: string;
+  path?: string;
+  value?: string;
+  count?: number;
+  createdAt: number;
+  metadata?: Record<string, unknown>;
 }
 
 /** Aggregated token usage from a subagent run. */

@@ -164,28 +164,34 @@ Use the \`subagent_start\` tool to fire-and-forget work in the background.
 The tool returns immediately; results arrive via an auto-injected message.
 By default the completion auto-triggers a parent turn — just omit \`onComplete\`.
 
+**Fleet view is your primary state source.** Use \`subagent_status\` without
+a \`jobId\` to see all background jobs grouped by attention priority:
+  1. \`needs_input\` — jobs waiting for user direction
+  2. \`failed\` — jobs that errored
+  3. \`running\` / \`cancelling\` — active jobs
+  4. \`completed\` / \`cancelled\` / \`interrupted\` — recent terminal jobs (last 5 min)
+
+Check the fleet view before making parent-worktree edits to see what is alive,
+waiting for input, failed, or ready. Prioritize \`needs_input\` and \`failed\`
+jobs — they need your attention first.
+
 **Fire-and-forget rule:** After calling \`subagent_start\`, end your turn.
-Do not poll \`subagent_status\` waiting for results. The auto-injected
-completion message will wake you when the job finishes. If you need
-to check progress once, that is fine — but do not loop.
+Do not poll or wait. The auto-injected completion message will wake you
+when the job finishes. Use the fleet view if you need a progress check.
 
-Check status anytime with \`subagent_status\` (omit \`jobId\` to list all).
-Peek at live activity with \`subagent_peek\` when you need to see what a
-running background subagent is currently doing.
+**Completion notifications are state changes, not reports.**
+The auto-injected message is a compact notification showing only the
+job ID, status, agents, duration, and a result summary.
+Do not quote or summarize the notification content as if it were
+subagent output. Treat it as a signal to inspect, not as a report to relay.
+
+**Use \`subagent_result\` only when you need details.**
+This tool retrieves the full output from a completed job. Read it for your
+own context, then present a concise summary in your own words. Never dump
+the full verbatim output into your response.
+For live activity, use \`subagent_peek\`. For structured job detail
+(lifecycle, artifacts, next actions), use \`subagent_status { jobId }\`.
 Cancel a running job with \`subagent_cancel\` (requires \`confirm: true\`).
-
-Retrieve the full output from a completed job using \`subagent_result\`.
-The auto-injected completion message is a **compact notification** — it shows
-only the job ID, status, agents, duration, and a summary of results.
-**Do not quote or summarize full result text from the notification.**
-Use \`subagent_result\` when you or the user needs the complete response text,
-tool call trace, or specific details.
-Treat completion notifications as state changes, not as reports.
-
-**When you use \`subagent_result\`, do not dump the full output into your response.**
-Read the results for your own context, then present a **concise summary** of key
-findings in your own words. If the user asks for specific details, share targeted
-excerpts — never the full verbatim report.
 
 **Per-call completion:** Multi-call background jobs fire a completion
 notification as each individual call finishes, not just when all calls
@@ -222,7 +228,7 @@ Jobs that use \`interactive: true\` do the same without exposing the marker.
 **Important:** Background jobs run in the same working tree by default
 and can edit files concurrently with the parent or sibling jobs. Always:
 - Give each subagent a clearly disjoint scope of work.
-- Use \`subagent_status\` to check running jobs before making changes.
+- Use \`subagent_status\` (fleet view) to check running jobs before making changes.
 - Use \`subagent_result\` to review full output before integrating.
 - Note the job ID at start time for later queries.
 
@@ -336,7 +342,7 @@ export function formatSubagentStartToolDescription(): string {
     "- A final job-level message arrives when all calls are done.",
     "",
     "Shared-worktree safety:",
-    "  - Use \`subagent_status\` to check running jobs before making parent edits.",
+    "  - Use the \`subagent_status\` fleet view to check running jobs before making parent edits.",
     "  - Use \`subagent_result\` to review full output before integrating changes.",
     "  - The job ID is shown at start — note it for later queries.",
     "  - When isolated mode is available, set `worktreeMode: \"isolated\"` to run each job in a separate git worktree.",
@@ -356,6 +362,24 @@ export function formatSubagentStatusToolDescription(): string {
     "Provide a `jobId` to inspect a specific job. Omit `jobId` to list all known jobs.",
     "Read-only. No confirmation needed.",
     "",
+    "**When to use this:**",
+    "  - With `jobId`: structured job detail page — shows lifecycle state, calls, artifacts,",
+    "    waiting-for-input questions, and next-action hints.",
+    "  - Without `jobId`: fleet overview grouped by attention priority. Use before making",
+    "    parent-worktree edits to check for conflicting background jobs.",
+    "",
+    "When called without `jobId`, displays a **fleet view** grouped by attention priority:",
+    "  1. `needs_input` — jobs waiting for user direction",
+    "  2. `failed` — jobs that errored",
+    "  3. `running` / `cancelling` — active jobs",
+    "  4. `completed` / `cancelled` / `interrupted` — recent terminal jobs (last 5 min)",
+    "",
+    "Each row shows job ID, agent names, age, status-specific fields (question, error,",
+    "tool counts, worktree mode), and a next-action hint.",
+    "",
+    "Use the fleet view before making parent-worktree edits to check for",
+    "conflicting background jobs.",
+    "",
     "> **Do not poll in a loop.** After starting background jobs with `subagent_start`,",
     "> end your turn and wait for the auto-injected completion message.",
     "",
@@ -370,11 +394,17 @@ export function formatSubagentPeekToolDescription(): string {
     "Peek at recent live activity from a background subagent job.",
     "",
     "Reads the raw child Pi event journal captured for each background call.",
-    "Use this while a job is running to inspect current assistant text, tool activity, and recent event types.",
+    "Use this while a job is running to see what the subagent is currently doing.",
+    "",
+    "**When to use this:**",
+    "  - Live activity timeline: shows tool calls and recent events for a running job.",
+    "  - By default, shows a clean activity summary without raw JSON lines.",
+    "  - For full output from a completed job, use `subagent_result`.",
+    "  - For structured job detail (lifecycle, artifacts, next actions), use `subagent_status { jobId }`.",
     "",
     "Provide `jobId` to inspect a job. Optionally provide `callIndex` for one call.",
     "Use `maxEvents` to control the event tail size (default 20, max 200).",
-    "Set `includeRawEvents` to true only when you need the raw JSON event tail.",
+    "Set `includeRawEvents` to true only when you need the raw JSON event tail (debugging).",
     "",
     "Examples:",
     '  { "jobId": "subjob_abc123" }',
@@ -386,6 +416,12 @@ export function formatSubagentPeekToolDescription(): string {
 export function formatSubagentResultToolDescription(): string {
   return [
     "Retrieve the full output from a completed or parked background subagent job.",
+    "",
+    "**When to use this:**",
+    "  - For the complete response text from a finished subagent.",
+    "  - For inspecting captured output, tool call traces, and error details.",
+    "  - For live activity, use `subagent_peek`.",
+    "  - For structured job detail (lifecycle, artifacts, next actions), use `subagent_status { jobId }`.",
     "",
     "Use this tool when you need to read the complete response text from a",
     "finished subagent. **Do not dump the full output verbatim into your response.**",

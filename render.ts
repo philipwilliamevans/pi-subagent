@@ -7,7 +7,10 @@ import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { getProcessErrorText, getResultSummaryText } from "./runner-events.js";
 import {
+	type BackgroundArtifact,
+	type BackgroundArtifactKind,
 	type BackgroundJob,
+	type BackgroundJobStatus,
 	type BackgroundOpenEscalation,
 	type CallState,
 	type DisplayItem,
@@ -19,6 +22,7 @@ import {
 	aggregateUsage,
 	getDisplayItems,
 	getFinalOutput,
+	isJobTerminal,
 	isResultError,
 	isResultSuccess,
 } from "./types.js";
@@ -138,6 +142,174 @@ function formatInitialContextStatus(r: SingleResult): string {
 		return `${formatInitialContext(r.session.initialContextApplied)} applied`;
 	}
 	return `${formatInitialContext(r.initialContext)} requested, ignored (continued session)`;
+}
+
+// ---------------------------------------------------------------------------
+// Artifact derivation and formatting
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive a stable artifact ID from a job ID and artifact kind.
+ */
+function artifactId(jobId: string, kind: BackgroundArtifactKind, suffix?: string): string {
+  return suffix ? `${jobId}-${kind}-${suffix}` : `${jobId}-${kind}`;
+}
+
+/**
+ * Derive structured artifacts from existing job fields at render time.
+ *
+ * The result artifact gets a stable id that can be referenced externally.
+ * Other artifact types are derived from worktree metadata, escalations, etc.
+ *
+ * Legacy jobs without artifacts render correctly because this derivation
+ * runs every time and handles partial/missing fields gracefully.
+ */
+export function deriveArtifacts(job: BackgroundJob): BackgroundArtifact[] {
+  const now = job.updatedAt || Date.now();
+  const artifacts: BackgroundArtifact[] = [];
+
+  // Result artifact — from terminal results
+  if (job.results && job.results.length > 0 && isJobTerminal(job.status)) {
+    artifacts.push({
+      id: artifactId(job.id, "result"),
+      kind: "result",
+      label: "result",
+      value: `${job.results.filter((r) => !isResultError(r)).length}/${job.results.length} calls`,
+      createdAt: now,
+    });
+  }
+
+  // Event journal artifact — if any call has activity
+  if (job.callStates) {
+    const totalToolCalls = job.callStates.reduce((sum, cs) => sum + (cs?.toolCalls || 0), 0);
+    if (totalToolCalls > 0) {
+      artifacts.push({
+        id: artifactId(job.id, "event_journal"),
+        kind: "event_journal",
+        label: "event journal",
+        count: totalToolCalls,
+        createdAt: now,
+      });
+    }
+  }
+
+  // Worktree artifacts — from worktree metadata
+  const meta = job.worktreeMetadata;
+  if (meta) {
+    if (meta.path) {
+      artifacts.push({
+        id: artifactId(job.id, "worktree"),
+        kind: "worktree",
+        label: "worktree",
+        path: meta.path,
+        createdAt: now,
+      });
+    }
+    if (meta.branch) {
+      artifacts.push({
+        id: artifactId(job.id, "branch"),
+        kind: "branch",
+        label: "branch",
+        value: meta.branch,
+        createdAt: now,
+      });
+    }
+    if (meta.patchPath) {
+      artifacts.push({
+        id: artifactId(job.id, "patch"),
+        kind: "patch",
+        label: "patch",
+        path: meta.patchPath,
+        createdAt: now,
+      });
+    }
+    if (meta.changedFiles && meta.changedFiles.length > 0) {
+      artifacts.push({
+        id: artifactId(job.id, "changed_files"),
+        kind: "changed_files",
+        label: "changed files",
+        count: meta.changedFiles.length,
+        createdAt: now,
+      });
+    }
+  }
+
+  // Escalation artifacts — from escalation history
+  if (job.escalations && job.escalations.length > 0) {
+    for (const esc of job.escalations) {
+      artifacts.push({
+        id: artifactId(job.id, "escalation", esc.id),
+        kind: "escalation",
+        label: `escalation ${esc.id}`,
+        value: esc.status,
+        createdAt: esc.createdAt || now,
+        metadata: { callIndex: esc.callIndex, status: esc.status },
+      });
+    }
+  }
+
+  return artifacts;
+}
+
+/**
+ * Compact artifact summary for completion notifications and fleet rows.
+ * Returns a human-readable string like "result, patch, 4 files" or empty.
+ */
+export function formatArtifactSummary(job: BackgroundJob): string {
+  const artifacts = deriveArtifacts(job);
+  if (artifacts.length === 0) return "";
+
+  const parts: string[] = [];
+
+  for (const art of artifacts) {
+    switch (art.kind) {
+      case "result":
+        parts.push("result");
+        break;
+      case "patch":
+        parts.push("patch");
+        break;
+      case "branch":
+        parts.push("branch");
+        break;
+      case "changed_files":
+        parts.push(`${art.count ?? "?"} files`);
+        break;
+      case "worktree":
+        parts.push("worktree");
+        break;
+      case "event_journal":
+        parts.push(`${art.count ?? "?"} events`);
+        break;
+      case "escalation":
+        // Skip listing individual escalations in compact summary
+        break;
+      case "plan":
+        parts.push("plan");
+        break;
+    }
+  }
+
+  return parts.join(", ");
+}
+
+/**
+ * Detailed artifact listing for job detail view (subagent_status { jobId }).
+ * Shows each artifact's kind, path/value, and count.
+ */
+export function formatArtifactDetail(job: BackgroundJob): string {
+  const artifacts = deriveArtifacts(job);
+  if (artifacts.length === 0) return "No artifacts.";
+
+  const lines: string[] = ["Artifacts"];
+  for (const art of artifacts) {
+    const parts: string[] = [`  ${art.label}`];
+    if (art.path) parts.push(shortenPath(art.path));
+    if (art.value) parts.push(art.value);
+    if (art.count !== undefined) parts.push(String(art.count));
+    lines.push(parts.join("  "));
+  }
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -459,9 +631,12 @@ export function formatBackgroundCompletion(
 		lines.push(`Error: ${job.error}`);
 	}
 
-	// Artifacts (non-worktree completed, non-callLevel)
-	if (!isCallLevel && job.status === "completed" && !job.worktreeMetadata) {
-		lines.push("Artifacts: result.md available");
+	// Artifacts summary (non-callLevel)
+	if (!isCallLevel) {
+		const artifactSummary = formatArtifactSummary(job);
+		if (artifactSummary) {
+			lines.push(`Artifacts: ${artifactSummary}`);
+		}
 	}
 
 	// Question for needs_input (if available, non-callLevel)
@@ -587,186 +762,332 @@ export function formatBackgroundEscalation(job: BackgroundJob): string {
 // Status formatting helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Format a single call's status line for subagent_status output.
- */
-function formatCallStatusLine(
-	call: BackgroundJob["calls"][number],
-	callState: CallState | undefined,
-	_result: SingleResult | undefined,
-): string {
-	if (!callState) {
-		const label = _result ? formatCallStatusLabel(_result) : "queued";
-		return `  ${call.agent} — ${label}`;
-	}
 
-	const label = callState.phase;
-	let elapsed = "";
-	if (callState.completedAt && callState.startedAt) {
-		elapsed = ` (took ${formatDuration(callState.completedAt - callState.startedAt)})`;
-	} else if (callState.startedAt) {
-		elapsed = ` (${formatAge(callState.startedAt)} elapsed)`;
-	}
+// ---------------------------------------------------------------------------
+// Job detail section helpers — for subagent_status { jobId }
+// ---------------------------------------------------------------------------
 
-	let line = `  ${call.agent} — ${label}${elapsed}`;
-
-	if (callState.recentActivity.length > 0 && callState.phase === "running") {
-		line += `\n    Latest: ${callState.recentActivity[0]}`;
-	}
-
-	if (callState.toolCalls > 0) {
-		line += `\n    ${callState.toolCalls} tool call${callState.toolCalls === 1 ? "" : "s"} so far`;
-	}
-
-	return line;
-}
-
-/**
- * Format the status of a single background job.
- */
-function formatWorktreeLabel(job: BackgroundJob): string {
-	if (job.worktreeMode === "isolated") return "[isolated worktree]";
-	if (job.worktreeMode === "shared") return "[shared worktree]";
-	return "";
-}
-
-function formatWorktreeScopeLine(job: BackgroundJob): string {
-	if (!job.worktreeScope) return "";
-	return `\n  Scope: ${job.worktreeScope}`;
-}
-
-function formatWorktreeMetadataLines(job: BackgroundJob): string[] {
-	const metadata = job.worktreeMetadata;
-	if (!metadata) return [];
+function formatJobHeader(job: BackgroundJob): string[] {
+	const age = job.createdAt ? formatAge(job.createdAt) : "";
+	const update = job.updatedAt ? formatAge(job.updatedAt) : "";
 	const lines = [
-		`  Worktree: ${metadata.path}`,
-		`  Branch: ${metadata.branch}`,
-		`  Base: ${metadata.baseCommit}`,
+		`Job ${job.id}`,
+		`Status: ${job.status}`,
+		`Created: ${age} ago`,
+		`Updated: ${update} ago`,
 	];
-	if (metadata.changedFiles && metadata.changedFiles.length > 0) {
-		const shown = metadata.changedFiles.slice(0, 10);
-		const suffix = metadata.changedFiles.length > shown.length
-			? `, ... +${metadata.changedFiles.length - shown.length} more`
-			: "";
-		lines.push(`  Changed files: ${shown.join(", ")}${suffix}`);
+	if (job.worktreeMode === "isolated") {
+		lines.push(`Mode: isolated worktree`);
+		if (job.worktreeMetadata?.branch) {
+			lines.push(`Branch: ${job.worktreeMetadata.branch}`);
+		}
+	} else if (job.worktreeScope) {
+		lines.push(`Scope: ${job.worktreeScope}`);
 	}
-	if (metadata.patchPath) lines.push(`  Patch: ${metadata.patchPath}`);
 	return lines;
 }
 
-function getOpenEscalationsFromJobs(jobs: BackgroundJob[]): BackgroundOpenEscalation[] {
-	return jobs
-		.filter((job) => job.status === "needs_input" && job.waitingForInput?.status === "open")
-		.map((job) => {
-			const escalation = job.waitingForInput!;
-			return {
-				jobId: job.id,
-				escalationId: escalation.id,
-				agent: job.calls[escalation.callIndex]?.agent ?? `call ${escalation.callIndex}`,
-				question: escalation.question,
-				createdAt: escalation.createdAt,
-				callIndex: escalation.callIndex,
-			};
-		});
+function formatJobCalls(job: BackgroundJob): string[] {
+	const lines = ["Calls"];
+	for (let i = 0; i < job.calls.length; i++) {
+		const call = job.calls[i];
+		const cs = job.callStates?.[i];
+		const r = job.results?.[i];
+		// Use callState.phase when available (more granular), fall back to result-derived label
+		const status = cs?.phase ?? formatCallStatusLabel(r);
+		const elapsed = cs?.completedAt && cs?.startedAt
+			? `took ${formatDuration(cs.completedAt - cs.startedAt)}`
+			: cs?.startedAt
+				? `${formatAge(cs.startedAt)} elapsed`
+				: "";
+		const toolCount = cs?.toolCalls ? `${cs.toolCalls} tool${cs.toolCalls > 1 ? "s" : ""}` : "";
+		const latest = cs?.recentActivity?.[0] ? `latest: ${cs.recentActivity[0]}` : "";
+		const extra = [elapsed, toolCount, latest].filter(Boolean).join("  ");
+		lines.push(`  ${i} ${call.agent}  ${status}${extra ? `   ${extra}` : ""}`);
+	}
+	return lines;
 }
 
-export function formatOpenEscalations(escalations: BackgroundOpenEscalation[]): string[] {
-	if (escalations.length === 0) return [];
+function formatJobArtifacts(job: BackgroundJob): string[] {
+	const artifacts = deriveArtifacts(job);
+	if (artifacts.length === 0) return ["No artifacts."];
+
+	const lines = ["Artifacts"];
+	for (const art of artifacts) {
+		switch (art.kind) {
+			case "result":
+				lines.push(`  result  ${art.value ?? "available"}`);
+				break;
+			case "event_journal":
+				lines.push(`  event journal  ${art.count ?? "?"} tool calls`);
+				break;
+			case "worktree":
+				lines.push(`  worktree  ${shortenPath(art.path ?? "?")}`);
+				break;
+			case "branch":
+				lines.push(`  branch  ${art.value ?? "?"}`);
+				break;
+			case "patch":
+				lines.push(`  patch  ${shortenPath(art.path ?? "?")}`);
+				break;
+			case "changed_files":
+				lines.push(`  changed files  ${art.count ?? "?"}`);
+				break;
+			case "escalation":
+				lines.push(`  escalation  ${art.metadata?.status ?? art.value ?? "?"}`);
+				break;
+			case "plan":
+				lines.push(`  plan  ${art.value ?? "pending"}`);
+				break;
+		}
+	}
+	return lines;
+}
+
+function formatJobEscalations(job: BackgroundJob): string[] {
+	if (job.status !== "needs_input" || !job.waitingForInput) return [];
+	const question = job.waitingForInput.question.trim();
 	return [
-		"Waiting for input:",
-		...escalations.map((escalation, index) => {
-			const question = truncateOneLine(
-				escalation.question || "The subagent is waiting for direction.",
-				160,
-			);
-			return `${index + 1}. ${escalation.jobId} ${escalation.agent}: ${question}`;
-		}),
+		"Waiting for input",
+		`  ${truncateOneLine(question, 160)}`,
 	];
 }
 
-export function formatJobStatus(job: BackgroundJob): string {
-	const age = job.createdAt ? formatAge(job.createdAt) : "";
-	const duration = job.results ? formatElapsed(job.createdAt, job.updatedAt) : "";
-
-	const callLines = job.calls.map((call, index) => {
-		const cs = job.callStates?.[index];
-		const r = job.results?.[index];
-		return formatCallStatusLine(call, cs, r);
-	});
-
-	const worktreeLabel = formatWorktreeLabel(job);
-	const worktreeSuffix = worktreeLabel ? ` ${worktreeLabel}` : "";
-
-	const scopeLine = formatWorktreeScopeLine(job);
-
-	const when = job.status === "running" || job.status === "cancelling"
-		? `started ${age} ago`
-		: job.status === "needs_input"
-			? `waiting ${age} ago (ran ${duration})`
-		: job.status === "interrupted"
-			? `interrupted ${age} ago (took ${duration})`
-			: `took ${duration} (finished ${age} ago)`;
-
-	const waitingLines = formatOpenEscalations(getOpenEscalationsFromJobs([job]));
-
-	return [
-		`${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}${worktreeSuffix}${scopeLine}`,
-		...formatWorktreeMetadataLines(job),
-		...waitingLines,
-		...callLines,
-	].join("\n");
+function formatJobNextActions(job: BackgroundJob): string[] {
+	const lines = ["Next"];
+	if (job.status === "running" || job.status === "cancelling") {
+		lines.push(`  peek: subagent_peek jobId ${job.id}`);
+		lines.push(`  cancel: subagent_cancel jobId ${job.id} confirm true`);
+	} else if (job.status === "needs_input") {
+		if (job.interactive) {
+			lines.push("  Reply with your choice or instruction.");
+		} else {
+			lines.push(`  continue: subagent_continue jobId ${job.id}`);
+		}
+	} else {
+		// Terminal states
+		if (job.status === "completed" && job.worktreeMetadata) {
+			lines.push(`  inspect: subagent_result jobId ${job.id} before integrating changes`);
+		} else {
+			lines.push(`  inspect: subagent_result jobId ${job.id}`);
+		}
+	}
+	return lines;
 }
 
 /**
- * Format a list of all background jobs.
+ * Full structured detail for a single background job.
+ * Delegates to section helpers for header, calls, artifacts, escalations, and next actions.
  */
-export function formatJobList(jobs: BackgroundJob[]): string {
+export function formatJobStatus(job: BackgroundJob): string {
+	const sections: string[] = [];
+	sections.push(formatJobHeader(job).join("\n"));
+	sections.push(formatJobCalls(job).join("\n"));
+	sections.push(formatJobArtifacts(job).join("\n"));
+
+	const escalations = formatJobEscalations(job);
+	if (escalations.length > 0) sections.push(escalations.join("\n"));
+
+	sections.push(formatJobNextActions(job).join("\n"));
+	return sections.join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// Fleet view — for subagent_status without jobId
+// ---------------------------------------------------------------------------
+
+export interface FleetGroup {
+	title: string;
+	jobs: BackgroundJob[];
+}
+
+const FLEET_STATUS_ORDER: BackgroundJobStatus[] = [
+	"needs_input",
+	"failed",
+	"running",
+	"cancelling",
+	"completed",
+	"cancelled",
+	"interrupted",
+];
+
+/** Recent terminal jobs within this window (ms) appear in the fleet view. */
+const TERMINAL_WINDOW_MS = 5 * 60 * 1000;
+
+function getGroupTitle(status: BackgroundJobStatus): string {
+	switch (status) {
+		case "needs_input": return "Needs input";
+		case "failed": return "Failed";
+		case "running": return "Running";
+		case "cancelling": return "Cancelling";
+		case "completed": return "Recent completed";
+		case "cancelled": return "Recent cancelled";
+		case "interrupted": return "Recent interrupted";
+	}
+}
+
+/**
+ * Group background jobs by attention priority, filtering out old terminal jobs.
+ * Within each group, sort most recently updated first.
+ */
+export function groupJobsForFleet(jobs: BackgroundJob[]): FleetGroup[] {
+	const now = Date.now();
+
+	// Only show terminal jobs that finished recently
+	const visible = jobs.filter((job) => {
+		if (isJobTerminal(job.status)) {
+			return now - job.updatedAt < TERMINAL_WINDOW_MS;
+		}
+		return true;
+	});
+
+	// Group by status
+	const groups = new Map<BackgroundJobStatus, BackgroundJob[]>();
+	for (const job of visible) {
+		const arr = groups.get(job.status);
+		if (arr) {
+			arr.push(job);
+		} else {
+			groups.set(job.status, [job]);
+		}
+	}
+
+	// Build ordered groups, jobs sorted by updatedAt descending
+	return FLEET_STATUS_ORDER
+		.filter((status) => groups.has(status))
+		.map((status) => ({
+			title: getGroupTitle(status),
+			jobs: groups.get(status)!.sort((a, b) => b.updatedAt - a.updatedAt),
+		}));
+}
+
+/**
+ * Format a single job row for the fleet view.
+ * Returns an array of lines (no trailing newline).
+ */
+function formatFleetJobRow(job: BackgroundJob): string[] {
+	const lines: string[] = [];
+
+	const agentNames = [...new Set(job.calls.map((c) => c.agent))].join(", ");
+	const age = job.createdAt ? formatAge(job.createdAt) : "";
+
+	let statusFields = "";
+	let secondaryLine = "";
+	let nextAction = "";
+
+	if (job.status === "needs_input" && job.waitingForInput) {
+		statusFields = `asks: ${truncateOneLine(job.waitingForInput.question, 120)}`;
+		nextAction = `next: subagent_continue escalationId ${job.waitingForInput.id}`;
+	} else if (job.status === "failed") {
+		statusFields = `error: ${truncateOneLine(job.error || "job failed", 120)}`;
+		nextAction = `next: subagent_result jobId ${job.id}`;
+	} else if (job.status === "running" || job.status === "cancelling") {
+		const toolCalls = job.callStates
+			? job.callStates.reduce((sum, cs) => sum + (cs?.toolCalls || 0), 0)
+			: 0;
+		const parts: string[] = [];
+		if (toolCalls > 0) parts.push(`${toolCalls} tools`);
+		if (job.worktreeMode === "isolated") {
+			parts.push("isolated");
+			if (job.worktreeMetadata?.branch) {
+				parts.push(`branch ${job.worktreeMetadata.branch}`);
+			}
+		}
+		statusFields = parts.join("  ");
+		nextAction = `next: subagent_peek jobId ${job.id}`;
+
+		// Latest activity from any call
+		if (job.callStates) {
+			for (const cs of job.callStates) {
+				if (cs?.recentActivity?.length > 0) {
+					secondaryLine = `latest: ${cs.recentActivity[0]}`;
+					break;
+				}
+			}
+		}
+	} else if (job.status === "completed") {
+		const artifactSummary = formatArtifactSummary(job);
+		statusFields = artifactSummary ? `artifacts: ${artifactSummary}` : "completed";
+		nextAction = `next: subagent_result jobId ${job.id}`;
+	} else if (job.status === "cancelled" || job.status === "interrupted") {
+		nextAction = `next: subagent_status`;
+	}
+
+	// First line: jobId  agents  age  [status fields]
+	const firstParts = [job.id, agentNames];
+	if (age) firstParts.push(age);
+	if (statusFields) firstParts.push(statusFields);
+	lines.push(`  ${firstParts.join("  ")}`);
+
+	// Secondary line (latest activity for running/cancelling)
+	if (secondaryLine) {
+		lines.push(`    ${secondaryLine}`);
+	}
+
+	// Next-action hint
+	if (nextAction) {
+		lines.push(`    ${nextAction}`);
+	}
+
+	return lines;
+}
+
+/**
+ * Format the full fleet view — a cockpit dashboard for all background jobs.
+ * Groups jobs by attention priority with a summary header.
+ */
+export function formatJobFleet(jobs: BackgroundJob[]): string {
 	if (jobs.length === 0) return "No background subagent jobs.";
 
-	const lines: string[] = ["Background subagent jobs:", ""];
+	const groups = groupJobsForFleet(jobs);
+
+	// Compute summary counts (same visibility as groups)
+	const now = Date.now();
+	const summaryCounts = new Map<string, number>();
 	for (const job of jobs) {
-		const age = job.createdAt ? formatAge(job.createdAt) : "";
-		const duration = job.results ? formatElapsed(job.createdAt, job.updatedAt) : "";
-
-		const worktreeLabel = formatWorktreeLabel(job);
-		const worktreeSuffix = worktreeLabel ? ` ${worktreeLabel}` : "";
-
-		let when: string;
-		if (job.status === "running" || job.status === "cancelling") {
-			when = `started ${age} ago`;
-		} else if (job.status === "needs_input") {
-			when = `waiting ${age} ago (ran ${duration})`;
-		} else if (job.status === "interrupted") {
-			when = `interrupted ${age} ago (took ${duration})`;
-		} else {
-			when = `took ${duration} (finished ${age} ago)`;
+		const visible = isJobTerminal(job.status)
+			? now - job.updatedAt < TERMINAL_WINDOW_MS
+			: true;
+		if (visible) {
+			summaryCounts.set(job.status, (summaryCounts.get(job.status) || 0) + 1);
 		}
-		lines.push(`  ${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}${worktreeSuffix}`);
 	}
 
-	const waitingLines = formatOpenEscalations(getOpenEscalationsFromJobs(jobs));
-	if (waitingLines.length > 0) {
-		lines.push("", ...waitingLines);
+	// Build summary line in fleet order
+	const summaryParts = FLEET_STATUS_ORDER
+		.map((status) => {
+			const count = summaryCounts.get(status) || 0;
+			if (count === 0) return null;
+			return `${count} ${status}`;
+		})
+		.filter((part): part is string => part !== null)
+		.join(" \u00b7 ");
+
+	const lines: string[] = [
+		"Background subagents",
+		summaryParts,
+		"",
+	];
+
+	for (const group of groups) {
+		lines.push(group.title);
+		for (const job of group.jobs) {
+			for (const rowLine of formatFleetJobRow(job)) {
+				lines.push(rowLine);
+			}
+		}
+		lines.push("");
 	}
 
-	lines.push("");
+	return lines.join("\n").trimEnd();
+}
 
-	const running = jobs.filter((j) => j.status === "running" || j.status === "cancelling").length;
-	const needsInput = jobs.filter((j) => j.status === "needs_input").length;
-	const completed = jobs.filter((j) => j.status === "completed").length;
-	const failed = jobs.filter((j) => j.status === "failed").length;
-	const cancelled = jobs.filter((j) => j.status === "cancelled").length;
-	const interrupted = jobs.filter((j) => j.status === "interrupted").length;
-	const parts: string[] = [];
-	if (running > 0) parts.push(`${running} running`);
-	if (needsInput > 0) parts.push(`${needsInput} needs_input`);
-	if (completed > 0) parts.push(`${completed} completed`);
-	if (failed > 0) parts.push(`${failed} failed`);
-	if (cancelled > 0) parts.push(`${cancelled} cancelled`);
-	if (interrupted > 0) parts.push(`${interrupted} interrupted`);
-	lines.push(parts.join(", "));
-
-	return lines.join("\n");
+/**
+ * Format a list of all background jobs (fleet view).
+ * Delegates to formatJobFleet for the cockpit-style output.
+ */
+export function formatJobList(jobs: BackgroundJob[]): string {
+	return formatJobFleet(jobs);
 }
 
 // ---------------------------------------------------------------------------
@@ -903,118 +1224,124 @@ function formatPlainToolArgs(args: unknown): string {
 	return json && json !== "{}" ? truncate(json, 80) : "";
 }
 
+interface SummarizedToolEvent {
+	name: string;
+	args: string;
+	status: "started" | "completed" | "failed";
+}
+
 function summarizePeekEvents(lines: string[]): {
-	eventTypes: string[];
+	toolCalls: SummarizedToolEvent[];
 	assistantExcerpt: string;
-	toolActivity: string;
 	rawEvents: string[];
 } {
-	const eventTypes: string[] = [];
+	const toolCalls: SummarizedToolEvent[] = [];
 	let assistantExcerpt = "";
-	let toolActivity = "";
-	const activeTools = new Map<string, string>();
+	const openTools = new Map<string, number>();
 
 	for (const line of lines) {
 		const event = parseEventLine(line);
 		if (!event) continue;
-		const type = typeof event.type === "string" ? event.type : "(unknown)";
-		eventTypes.push(type);
+		const type = typeof event.type === "string" ? event.type : "";
 
-		if (type === "message_start" || type === "message_update" || type === "message_end" || type === "turn_end") {
+		// Extract assistant text from messages
+		if (!assistantExcerpt && (type === "message_start" || type === "message_update" || type === "message_end" || type === "turn_end")) {
 			const excerpt = extractMessageExcerpt(event.message);
 			if (excerpt) assistantExcerpt = excerpt;
-		} else if (type === "agent_end" && Array.isArray(event.messages)) {
+		} else if (!assistantExcerpt && type === "agent_end" && Array.isArray(event.messages)) {
 			for (const message of event.messages) {
 				const excerpt = extractMessageExcerpt(message);
-				if (excerpt) assistantExcerpt = excerpt;
+				if (excerpt) { assistantExcerpt = excerpt; break; }
 			}
 		}
 
-		if (type === "tool_execution_start" || type === "tool_execution_update") {
-			const id = typeof event.toolCallId === "string" ? event.toolCallId : `${eventTypes.length}`;
+		// Tool call activity — track start and end for each toolCallId
+		if (type === "tool_execution_start") {
+			const id = typeof event.toolCallId === "string" ? event.toolCallId : `${toolCalls.length}`;
 			const name = typeof event.toolName === "string" ? event.toolName : "tool";
 			const args = formatPlainToolArgs(event.args);
-			const label = args ? `${name} ${args}` : name;
-			activeTools.set(id, label);
-			toolActivity = type === "tool_execution_update" ? `${label} (running, updated)` : `${label} (running)`;
+			const index = toolCalls.length;
+			openTools.set(id, index);
+			toolCalls.push({ name, args, status: "started" });
 		} else if (type === "tool_execution_end") {
 			const id = typeof event.toolCallId === "string" ? event.toolCallId : "";
-			const name = typeof event.toolName === "string" ? event.toolName : "tool";
-			if (id) activeTools.delete(id);
-			toolActivity = `${name} (${event.isError ? "failed" : "completed"})`;
+			if (id && openTools.has(id)) {
+				const idx = openTools.get(id)!;
+				toolCalls[idx] = { ...toolCalls[idx], status: event.isError ? "failed" : "completed" };
+				openTools.delete(id);
+			}
 		}
 	}
 
-	if (activeTools.size > 0) {
-		const latest = Array.from(activeTools.values()).at(-1);
-		if (latest) toolActivity = `${latest} (running)`;
-	}
-
 	return {
-		eventTypes: eventTypes.slice(-10),
-		assistantExcerpt: assistantExcerpt ? truncate(assistantExcerpt, 1200) : "",
-		toolActivity,
+		toolCalls,
+		assistantExcerpt: assistantExcerpt ? truncate(assistantExcerpt, 300) : "",
 		rawEvents: lines,
 	};
 }
 
+/**
+ * Format a live activity snapshot for a background job.
+ *
+ * By default shows a clean timeline of tool calls without raw JSON event lines.
+ * Set `includeRawEvents: true` to include the full raw event tail.
+ */
 export function formatJobPeek(job: BackgroundJob, options: PeekOptions): string {
-	const age = job.createdAt ? formatAge(job.createdAt) : "";
-	const duration = job.results ? formatElapsed(job.createdAt, job.updatedAt) : "";
-	const when = job.status === "running" || job.status === "cancelling"
-		? `started ${age} ago`
-		: job.status === "interrupted"
-			? `interrupted ${age} ago${duration ? ` after ${duration}` : ""}`
-			: `finished ${age} ago${duration ? ` after ${duration}` : ""}`;
-
 	const targetCalls = options.callIndex !== undefined
 		? [{ call: job.calls[options.callIndex], index: options.callIndex }]
 		: job.calls.map((call, index) => ({ call, index }));
 
 	const lines: string[] = [
-		`${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}`,
+		`Recent activity for ${job.id}`,
 	];
 
 	for (const { call, index } of targetCalls) {
 		if (!call) continue;
-		const state = job.callStates?.[index];
 		const events = options.eventLinesByCall.find((entry) => entry.callIndex === index)?.lines ?? [];
 		const summary = summarizePeekEvents(events);
-		const phase = state?.phase ?? formatCallStatusLabel(job.results?.[index]);
 
 		lines.push("");
-		lines.push(`## Call ${index}: ${call.agent} — ${phase}`);
-		lines.push(`Prompt: ${truncate(oneLine(call.prompt), 160)}`);
-		if (state?.startedAt) {
-			const elapsed = state.completedAt
-				? formatDuration(state.completedAt - state.startedAt)
-				: `${formatAge(state.startedAt)} elapsed`;
-			lines.push(`Elapsed: ${elapsed}`);
-		}
+		lines.push(`Call ${index} ${call.agent}`);
 
 		if (events.length === 0) {
-			lines.push("Events: no events yet");
+			lines.push("  No events yet");
 			continue;
 		}
 
-		if (summary.toolActivity) lines.push(`Tool: ${summary.toolActivity}`);
-		if (summary.assistantExcerpt) {
-			lines.push("");
-			lines.push("Assistant excerpt:");
-			lines.push(summary.assistantExcerpt.replace(/\n/g, "\n  "));
-		}
-
-		lines.push("");
-		lines.push(`Recent events: ${summary.eventTypes.join(" -> ") || "(none)"}`);
-
-		if (options.includeRawEvents) {
-			lines.push("");
-			lines.push("Raw events:");
-			for (const raw of summary.rawEvents) lines.push(raw);
+		// Activity-first: show tool call timeline
+		if (summary.toolCalls.length > 0) {
+			for (const tc of summary.toolCalls) {
+				const suffix = tc.status === "completed" ? "" : tc.status === "failed" ? " (failed)" : "";
+				const label = tc.args ? `${tc.name} ${tc.args}` : tc.name;
+				lines.push(`  ${label}${suffix}`);
+			}
+		} else {
+			// No tool calls — show assistant excerpt if short and useful
+			if (summary.assistantExcerpt && summary.assistantExcerpt.length < 200) {
+				lines.push(`  ${truncateOneLine(summary.assistantExcerpt, 100)}`);
+			} else {
+				lines.push("  No tool activity yet");
+			}
 		}
 	}
 
-	return lines.join("\n").trim();
+	// Footer line: raw events hint or raw events body
+	if (!options.includeRawEvents) {
+		lines.push("");
+		lines.push("Raw events hidden. Use includeRawEvents: true for debugging.");
+	} else {
+		for (const { index } of targetCalls) {
+			if (!job.calls[index]) continue;
+			const events = options.eventLinesByCall.find((entry) => entry.callIndex === index)?.lines ?? [];
+			if (events.length > 0) {
+				lines.push("");
+				lines.push(`Raw events for Call ${index}:`);
+				for (const raw of events) lines.push(raw);
+			}
+		}
+	}
+
+	return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------

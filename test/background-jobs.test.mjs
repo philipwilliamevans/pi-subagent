@@ -447,10 +447,10 @@ test("formatJobStatus shows running job", async () => {
     const text = formatJobStatus(job);
     assert.match(text, /subjob_run1/);
     assert.match(text, /running/);
-    assert.match(text, /2 calls/);
-    assert.match(text, /started/);
     assert.match(text, /explorer/);
     assert.match(text, /reviewer/);
+    assert.match(text, /Created:/);
+    assert.match(text, /Updated:/);
   } finally {
     cleanup();
   }
@@ -476,9 +476,9 @@ test("formatJobStatus shows compact waiting-for-input section", async () => {
     };
 
     const text = formatJobStatus(job);
-    assert.match(text, /Waiting for input:/);
-    assert.match(text, /1\. subjob_wait_status explorer: Which follow-up topic should I explore\?/);
-    assert.doesNotMatch(text, /subagent_continue/);
+    assert.match(text, /Waiting for input/);
+    assert.match(text, /Which follow-up topic should I explore\?/);
+    assert.match(text, /subagent_continue/);
   } finally {
     cleanup();
   }
@@ -505,9 +505,10 @@ test("formatJobStatus shows completed job with call results", async () => {
     const text = formatJobStatus(job);
     assert.match(text, /subjob_done1/);
     assert.match(text, /completed/);
-    assert.match(text, /1 call/);
-    assert.match(text, /took/);
     assert.match(text, /explorer/);
+    assert.match(text, /Artifacts/);
+    assert.match(text, /result/);
+    assert.match(text, /1\/1 calls/);
   } finally {
     cleanup();
   }
@@ -535,8 +536,8 @@ test("formatJobStatus shows failed job", async () => {
     const text = formatJobStatus(job);
     assert.match(text, /subjob_fail1/);
     assert.match(text, /failed/);
-    assert.match(text, /1 call/);
     assert.match(text, /fixer/);
+    assert.match(text, /0 fixer/);
   } finally {
     cleanup();
   }
@@ -559,8 +560,8 @@ test("formatJobStatus shows cancelling job", async () => {
     const text = formatJobStatus(job);
     assert.match(text, /subjob_cancel1/);
     assert.match(text, /cancelling/);
-    assert.match(text, /1 call/);
     assert.match(text, /runner/);
+    assert.match(text, /0 runner/);
   } finally {
     cleanup();
   }
@@ -589,8 +590,9 @@ test("formatJobPeek reports no events yet for a running call", async () => {
     });
 
     assert.match(text, /subjob_peek_empty/);
-    assert.match(text, /Call 0: explorer — running/);
-    assert.match(text, /Events: no events yet/);
+    assert.match(text, /Call 0 explorer/);
+    assert.match(text, /No events yet/);
+    assert.match(text, /Raw events hidden/);
   } finally {
     cleanup();
   }
@@ -626,10 +628,13 @@ test("formatJobPeek summarizes tool events and assistant excerpts", async () => 
       eventLinesByCall: [{ callIndex: 0, lines: eventLines }],
     });
 
-    assert.match(text, /Tool: read \(completed\)/);
-    assert.match(text, /Assistant excerpt:/);
-    assert.match(text, /I found the interesting file/);
-    assert.match(text, /turn_start -> tool_execution_start -> message_update -> tool_execution_end/);
+    // Default peek: activity-first — shows tool names, hides raw JSON and assistant excerpts
+    assert.match(text, /read \/tmp\/a\.ts/);
+    // Assistant excerpt is not shown because there are tool calls (activity-first)
+    assert.doesNotMatch(text, /I found the interesting file/);
+    // Shows the hint about hidden raw events instead of raw JSON lines
+    assert.doesNotMatch(text, /\{"type":/);
+    assert.match(text, /Raw events hidden/);
   } finally {
     cleanup();
   }
@@ -656,8 +661,198 @@ test("formatJobPeek can include raw event tails", async () => {
       includeRawEvents: true,
     });
 
-    assert.match(text, /Raw events:/);
+    assert.match(text, /Raw events for Call 0:/);
     assert.match(text, /"agent_end"/);
+  } finally {
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Job detail section-specific tests (plan: background-ux-detail-and-peek)
+// ---------------------------------------------------------------------------
+
+test("formatJobStatus running job detail shows lifecycle, calls, recent activity, and next actions", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const now = Date.now();
+    const job = {
+      id: "subjob_running_detail",
+      createdAt: now - 30000,
+      updatedAt: now - 5000,
+      status: "running",
+      calls: [
+        { index: 0, agent: "explorer", prompt: "Search files", effectiveCwd: "/tmp", initialContext: "empty" },
+        { index: 1, agent: "reviewer", prompt: "Review", effectiveCwd: "/tmp", initialContext: "empty" },
+      ],
+      callStates: [
+        { phase: "running", startedAt: now - 25000, toolCalls: 4, recentActivity: ["read src/main.ts", "grep /test/"] },
+        { phase: "queued", toolCalls: 0, recentActivity: [] },
+      ],
+      results: [
+        { callIndex: 0, agent: "explorer", exitCode: -1, messages: [], stderr: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 } },
+      ],
+    };
+
+    const text = formatJobStatus(job);
+
+    // Lifecycle header
+    assert.match(text, /Job subjob_running_detail/);
+    assert.match(text, /Status: running/);
+    assert.match(text, /Created:/);
+    assert.match(text, /Updated:/);
+
+    // Calls section
+    assert.match(text, /Calls/);
+    assert.match(text, /0 explorer/);
+    assert.match(text, /running/);
+    assert.match(text, /4 tools/);
+    assert.match(text, /1 reviewer/);
+    assert.match(text, /queued/);
+    assert.match(text, /read src\/main\.ts/);
+
+    // Artifacts section — event journal from call activity
+    assert.match(text, /Artifacts/);
+    assert.match(text, /event journal/);
+    assert.match(text, /4 tool calls/);
+
+    // Next actions
+    assert.match(text, /Next/);
+    assert.match(text, /subagent_peek/);
+    assert.match(text, /subagent_cancel/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobStatus terminal isolated job shows branch, patch path, and changed files", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const now = Date.now();
+    const job = {
+      id: "subjob_isolated_terminal",
+      createdAt: now - 120000,
+      updatedAt: now - 60000,
+      status: "completed",
+      calls: [
+        { index: 0, agent: "explorer", prompt: "Do work", effectiveCwd: "/tmp", initialContext: "empty" },
+      ],
+      callStates: [
+        { phase: "completed", startedAt: now - 120000, completedAt: now - 60000, toolCalls: 5, recentActivity: [] },
+      ],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Do work", initialContext: "empty",
+        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: "Done." }], timestamp: now - 60000 }],
+        stderr: "", usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+      worktreeMode: "isolated",
+      worktreeMetadata: {
+        path: "/tmp/worktree",
+        branch: "codex/subjob_isolated_terminal",
+        baseCommit: "abc123",
+        changedFiles: ["src/main.ts", "README.md", "src/utils.ts", "package.json"],
+        patchPath: ".pi-subagent/jobs/subjob_isolated_terminal/worktree.patch",
+      },
+    };
+
+    const text = formatJobStatus(job);
+
+    // Lifecycle header with worktree mode
+    assert.match(text, /Job subjob_isolated_terminal/);
+    assert.match(text, /Status: completed/);
+    assert.match(text, /Mode: isolated worktree/);
+    assert.match(text, /Branch: codex\/subjob_isolated_terminal/);
+
+    // Calls section
+    assert.match(text, /Calls/);
+    assert.match(text, /0 explorer/);
+    assert.match(text, /completed/);
+
+    // Artifacts section with derived artifact detail
+    assert.match(text, /Artifacts/);
+    assert.match(text, /result/);
+    assert.match(text, /1\/1 calls/);
+    assert.match(text, /patch/);
+    assert.match(text, /worktree\.patch/);
+    assert.match(text, /changed files/);
+    assert.match(text, /4/);
+    assert.match(text, /branch/);
+    assert.match(text, /codex\/subjob_isolated_terminal/);
+
+    // Next actions
+    assert.match(text, /Next/);
+    assert.match(text, /subagent_result.*before integrating/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobStatus needs_input job shows escalation and continue hint", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const now = Date.now();
+    const job = {
+      id: "subjob_input_detail",
+      createdAt: now - 30000,
+      updatedAt: now - 10000,
+      status: "needs_input",
+      calls: [{ index: 0, agent: "explorer", prompt: "Explore", effectiveCwd: "/tmp", initialContext: "empty" }],
+      callStates: [{ phase: "needs_input", startedAt: now - 25000, toolCalls: 2, recentActivity: [] }],
+      waitingForInput: makeEscalation({
+        id: "esc_input_detail",
+        question: "Which topic should I explore next?",
+      }),
+    };
+
+    const text = formatJobStatus(job);
+
+    // Lifecycle header
+    assert.match(text, /Job subjob_input_detail/);
+    assert.match(text, /Status: needs_input/);
+
+    // Waiting for input section
+    assert.match(text, /Waiting for input/);
+    assert.match(text, /Which topic should I explore next\?/);
+
+    // Next section shows continue hint
+    assert.match(text, /Next/);
+    assert.match(text, /subagent_continue/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobStatus renders without throwing for legacy jobs without callStates", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_legacy_no_callstates",
+      createdAt: Date.now() - 1000,
+      updatedAt: Date.now(),
+      status: "completed",
+      calls: [{ index: 0, agent: "explorer", prompt: "Find", effectiveCwd: "/tmp", initialContext: "empty" }],
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Find", initialContext: "empty",
+        exitCode: 0, messages: [], stderr: "",
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+      // No callStates, no worktreeMetadata — legacy
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /subjob_legacy_no_callstates/);
+    assert.match(text, /Calls/);
+    assert.match(text, /Artifacts/);
+    assert.match(text, /Next/);
+    assert.ok(text.length > 0, "output is non-empty");
   } finally {
     cleanup();
   }
@@ -690,12 +885,21 @@ test("formatJobList shows mixed states with summary", async () => {
     ];
 
     const text = formatJobList(jobs);
-    assert.match(text, /Background subagent jobs/);
-    assert.match(text, /subjob_a.*running/);
-    assert.match(text, /subjob_b.*completed/);
-    assert.match(text, /subjob_c.*failed/);
-    assert.match(text, /subjob_d.*cancelled/);
-    assert.match(text, /1 running.*1 completed.*1 failed.*1 cancelled/);
+    assert.match(text, /Background subagents/, "has fleet header");
+    assert.match(text, /subjob_a/, "includes running job");
+    assert.match(text, /subjob_b/, "includes completed job");
+    assert.match(text, /subjob_c/, "includes failed job");
+    assert.match(text, /subjob_d/, "includes cancelled job");
+    assert.match(text, /Running/, "has running section");
+    assert.match(text, /Recent completed/, "has completed section");
+    assert.match(text, /Failed/, "has failed section");
+    assert.match(text, /Recent cancelled/, "has cancelled section");
+    // Summary counts in fleet order
+    assert.match(text, /1 failed/, "counts failed");
+    assert.match(text, /1 running/, "counts running");
+    assert.match(text, /1 completed/, "counts completed");
+    assert.match(text, /1 cancelled/, "counts cancelled");
+    // No separate waiting section in fleet view (escalations inline)
     assert.doesNotMatch(text, /Waiting for input:/);
   } finally {
     cleanup();
@@ -725,8 +929,13 @@ test("formatJobList shows one pending escalation", async () => {
     ];
 
     const text = formatJobList(jobs);
-    assert.match(text, /Waiting for input:/);
-    assert.match(text, /1\. subjob_wait_one explorer: Which follow-up topic should I explore\?/);
+    // Fleet view puts escalation inline in the needs_input row
+    assert.match(text, /Needs input/, "has needs_input section");
+    assert.match(text, /subjob_wait_one/, "includes job ID");
+    assert.match(text, /asks:/, "has asks prefix");
+    assert.match(text, /Which follow-up topic should I explore\?/, "includes question");
+    assert.match(text, /esc_wait_one/, "includes escalation ID");
+    assert.match(text, /subagent_continue/, "has continue hint");
   } finally {
     cleanup();
   }
@@ -769,9 +978,17 @@ test("formatJobList shows multiple pending escalations", async () => {
     ];
 
     const text = formatJobList(jobs);
-    assert.match(text, /Waiting for input:/);
-    assert.match(text, /1\. subjob_alpha explorer: Choose a follow-up topic\./);
-    assert.match(text, /2\. subjob_beta reviewer: Approve the simpler fix or investigate root cause\?/);
+    // Fleet view places each escalation inline in its own needs_input row
+    assert.match(text, /Needs input/, "has needs_input section");
+    assert.match(text, /subjob_alpha/, "includes first job");
+    assert.match(text, /subjob_beta/, "includes second job");
+    assert.match(text, /explorer/, "includes first agent");
+    assert.match(text, /reviewer/, "includes second agent");
+    assert.match(text, /Choose a follow-up topic\./, "includes first question");
+    assert.match(text, /Approve the simpler fix or investigate root cause\?/, "includes second question");
+    // Each row has its own escalation ID and continue hint
+    assert.match(text, /esc_alpha/, "includes first esc ID");
+    assert.match(text, /esc_beta/, "includes second esc ID");
   } finally {
     cleanup();
   }
@@ -885,7 +1102,7 @@ test("formatBackgroundCompletion shows success state", async () => {
     assert.match(text, /explorer/);
     // Compact format shows aggregated result, not per-call status
     assert.match(text, /Result: 1\/1 calls completed/);
-    assert.match(text, /Artifacts: result.md available/);
+    assert.match(text, /Artifacts: result/);
     assert.match(text, /subagent_result/);
     // Compact format does NOT include output excerpts
     assert.doesNotMatch(text, /Found 5 test files/);
@@ -1381,7 +1598,7 @@ test("formatJobStatus honors callStates when present", async () => {
     const text = formatJobStatus(job);
     assert.match(text, /subjob_cs/);
     assert.match(text, /running/);
-    assert.match(text, /3 tool calls/);
+    assert.match(text, /3 tools/);
     assert.match(text, /read file\.ts/);
   } finally {
     cleanup();
@@ -1469,7 +1686,8 @@ test("formatJobStatus shows mixed running and queued call states (simulating con
     assert.match(text, /running/);
     // First call shows running with activity
     assert.match(text, /explorer/);
-    assert.match(text, /running.*elapsed/);
+    assert.match(text, /running/);
+    assert.match(text, /5s elapsed/);
     assert.match(text, /read src\/index\.ts/);
     // Second call shows queued
     assert.match(text, /reviewer/);
@@ -1751,9 +1969,10 @@ test("formatJobList shows interrupted jobs in summary", async () => {
     ];
 
     const text = formatJobList(jobs);
-    assert.match(text, /subjob_int.*interrupted/);
-    assert.match(text, /interrupted/);
-    assert.match(text, /1 running.*1 interrupted/);
+    assert.match(text, /subjob_int/, "includes interrupted job");
+    assert.match(text, /Recent interrupted/, "has interrupted section");
+    assert.match(text, /1 running/, "counts running");
+    assert.match(text, /1 interrupted/, "counts interrupted");
   } finally {
     cleanup();
   }
@@ -1802,7 +2021,9 @@ test("formatJobStatus shows shared worktree mode", async () => {
 
     const text = formatJobStatus(job);
     assert.match(text, /subjob_shared/);
-    assert.match(text, /\[shared worktree\]/);
+    assert.match(text, /Job subjob_shared/);
+    assert.match(text, /Status: running/);
+    // Shared worktree mode is default, no explicit label shown
   } finally {
     cleanup();
   }
@@ -1825,7 +2046,7 @@ test("formatJobStatus shows isolated worktree mode", async () => {
 
     const text = formatJobStatus(job);
     assert.match(text, /subjob_isolated/);
-    assert.match(text, /\[isolated worktree\]/);
+    assert.match(text, /Mode: isolated worktree/);
   } finally {
     cleanup();
   }
@@ -1847,7 +2068,8 @@ test("formatJobStatus omits worktree label for legacy jobs without mode", async 
 
     const text = formatJobStatus(job);
     assert.match(text, /subjob_legacy/);
-    assert.doesNotMatch(text, /\[.*worktree\]/);
+    assert.doesNotMatch(text, /Mode:/);
+    assert.doesNotMatch(text, /Scope:/);
   } finally {
     cleanup();
   }
@@ -1859,13 +2081,17 @@ test("formatJobList shows worktree mode in listing", async () => {
     const { formatJobList } = await import(moduleUrl);
 
     const jobs = [
-      { id: "subjob_a", createdAt: Date.now() - 10000, updatedAt: Date.now() - 10000, status: "running", calls: [{ index: 0, agent: "a", prompt: "", effectiveCwd: "/tmp", initialContext: "empty" }], promise: Promise.resolve(), onComplete: "trigger", worktreeMode: "isolated" },
+      { id: "subjob_a", createdAt: Date.now() - 10000, updatedAt: Date.now() - 10000, status: "running", calls: [{ index: 0, agent: "a", prompt: "", effectiveCwd: "/tmp", initialContext: "empty" }], promise: Promise.resolve(), onComplete: "trigger", worktreeMode: "isolated", callStates: [{ phase: "running", toolCalls: 0, recentActivity: [] }] },
       { id: "subjob_b", createdAt: Date.now() - 60000, updatedAt: Date.now() - 10000, status: "completed", calls: [], promise: Promise.resolve(), onComplete: "message", worktreeMode: "shared" },
     ];
 
     const text = formatJobList(jobs);
-    assert.match(text, /subjob_a.*\[isolated worktree\]/);
-    assert.match(text, /subjob_b.*\[shared worktree\]/);
+    // Fleet view shows worktree mode inline for running jobs
+    assert.match(text, /subjob_a/, "includes first job");
+    assert.match(text, /isolated/, "notes isolated mode for running job");
+    // Completed jobs show artifact summary regardless of worktree mode
+    assert.match(text, /subjob_b/, "includes second job");
+    assert.match(text, /completed/, "completed job shows completed status");
   } finally {
     cleanup();
   }

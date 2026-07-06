@@ -89,3 +89,29 @@ test("appendInteractiveWaitInstructions adds default wait guidance", () => {
   assert.match(prompt, /Ask a concise question/);
   assert.match(prompt, new RegExp(`End your final line with exactly: ${DEFAULT_INTERACTIVE_AWAIT_MARKER}`));
 });
+
+test("background contract tells parent to use subagent_status as fleet overview", () => {
+  const prompt = makePrompt();
+  assert.match(prompt, /Fleet view is your primary state source/);
+  assert.ok(prompt.includes("needs_input") && prompt.includes("failed") && prompt.includes("running") && prompt.includes("completed"), "lists status groups");
+  assert.match(prompt, /grouped by attention priority/);
+});
+
+test("background contract tells parent to use subagent_result only for details", () => {
+  const prompt = makePrompt();
+  assert.ok(prompt.includes("Use `subagent_result` only when you need details"));
+  assert.match(prompt, /Never dump/);
+  assert.match(prompt, /not as a report to relay/);
+});
+
+test("background contract discourages quoting completion notification content", () => {
+  const prompt = makePrompt();
+  assert.match(prompt, /Do not quote or summarize/);
+  assert.match(prompt, /signal to inspect/);
+});
+
+test("background contract prioritizes needs_input and failed jobs", () => {
+  const prompt = makePrompt();
+  assert.ok(prompt.includes("Prioritize `needs_input` and `failed`"));
+  assert.match(prompt, /they need your attention first/);
+});

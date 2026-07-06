@@ -230,13 +230,25 @@ The next investments should strengthen the foundation rather than chase every ma
 
 Recommended order:
 
-1. Make lifecycle persistence reliable for every important state transition.
-2. Define the durable job/run/artifact model.
+1. Make lifecycle persistence reliable for every important state transition. ✅
+2. Define the durable job/run/artifact model. ✅ (see below)
 3. Emit Agentflow-friendly lifecycle events.
 4. Add prompt-store references to agent invocations.
 5. Tighten workspace/worktree ownership semantics.
 6. Add structured escalation records and simple human response handling.
 7. Build richer overview/peek/attach surfaces once the state model is stable.
+
+### Current progress (Q3 2026)
+
+**Artifact model landed.** The `BackgroundArtifact` types are in `types.ts` and
+artifacts are derived at render time from existing job fields (result, event
+journal, worktree, branch, patch, changed files, escalations). Artifact
+summaries appear in completion notifications, fleet view rows, and job detail
+views. Artifacts are persisted in `state.json` and survive parent process
+restart.
+
+**Next:** Agentflow lifecycle events (item 3) and prompt-store references
+(item 4) are the logical next investments.
 
 ## Explicit non-goals for now
 

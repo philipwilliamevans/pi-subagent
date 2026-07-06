@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type {
+  BackgroundArtifact,
   BackgroundEscalation,
   BackgroundJob,
   BackgroundJobStatus,
@@ -65,6 +66,7 @@ interface PersistedJobState {
   interactive?: boolean;
   escalations?: PersistedEscalation[];
   waitingForInput?: PersistedEscalation;
+  artifacts?: BackgroundArtifact[];
 }
 
 type LegacyInputRequest = {
@@ -169,6 +171,7 @@ function hydrateJob(state: PersistedJobState): BackgroundJob {
     interactive: state.interactive,
     escalations,
     waitingForInput,
+    artifacts: state.artifacts,
     // Unserializable — set to safe defaults
     promise: Promise.resolve(),
     abortController: undefined,
@@ -268,6 +271,7 @@ function serializeJob(job: BackgroundJob): PersistedJobState {
     interactive: job.interactive,
     escalations: job.escalations,
     waitingForInput: job.waitingForInput,
+    artifacts: job.artifacts,
   };
 }
 

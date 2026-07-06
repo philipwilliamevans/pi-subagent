@@ -661,3 +661,67 @@ test("persisted state.json excludes promise, abortController", () => {
     fs.rmSync(baseDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Artifact persistence round-trip
+// ---------------------------------------------------------------------------
+
+test("persistJobState round-trips artifacts", () => {
+  const baseDir = createTempBase();
+  try {
+    const artifacts = [
+      {
+        id: "subjob_art_001-result",
+        kind: "result",
+        label: "result",
+        value: "1/1 calls",
+        createdAt: Date.now(),
+      },
+      {
+        id: "subjob_art_001-patch",
+        kind: "patch",
+        label: "patch",
+        path: ".pi-subagent/jobs/subjob_art_001/worktree.patch",
+        createdAt: Date.now(),
+      },
+      {
+        id: "subjob_art_001-changed_files",
+        kind: "changed_files",
+        label: "changed files",
+        count: 3,
+        createdAt: Date.now(),
+      },
+    ];
+    const job = makeMinimalJob("subjob_art_001", "completed", { artifacts });
+    storeModule.persistJobState(baseDir, job);
+
+    const loaded = storeModule.loadPersistedJob(baseDir, "subjob_art_001");
+    assert.ok(loaded);
+    assert.ok(loaded.artifacts, "artifacts field present after round-trip");
+    assert.equal(loaded.artifacts.length, 3);
+    assert.equal(loaded.artifacts[0].kind, "result");
+    assert.equal(loaded.artifacts[1].kind, "patch");
+    assert.equal(loaded.artifacts[2].kind, "changed_files");
+    assert.equal(loaded.artifacts[2].count, 3);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("persistJobState legacy job without artifacts still loads correctly", () => {
+  const baseDir = createTempBase();
+  try {
+    // A job stored without the artifacts field
+    const job = makeMinimalJob("subjob_legacy_no_art", "completed");
+    storeModule.persistJobState(baseDir, job);
+
+    const loaded = storeModule.loadPersistedJob(baseDir, "subjob_legacy_no_art");
+    assert.ok(loaded);
+    assert.equal(loaded.artifacts, undefined, "legacy job has no artifacts field");
+    // Core fields still present
+    assert.equal(loaded.status, "completed");
+    assert.equal(loaded.results.length, 1);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
