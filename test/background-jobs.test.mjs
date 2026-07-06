@@ -661,7 +661,8 @@ test("formatJobPeek can include raw event tails", async () => {
       includeRawEvents: true,
     });
 
-    assert.match(text, /Raw events for Call 0:/);
+    assert.match(text, /Raw events for Call 0/);
+    assert.match(text, /truncated oversized payloads/);
     assert.match(text, /"agent_end"/);
   } finally {
     cleanup();

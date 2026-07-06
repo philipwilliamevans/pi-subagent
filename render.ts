@@ -1224,6 +1224,93 @@ function formatPlainToolArgs(args: unknown): string {
 	return json && json !== "{}" ? truncate(json, 80) : "";
 }
 
+/** Maximum character length for a text payload inside a raw peek event. */
+const RAW_EVENT_TEXT_TRUNCATION_LIMIT = 500;
+/** Maximum character length for the entire serialized raw event line. */
+const RAW_EVENT_LINE_LIMIT = 2000;
+
+/**
+ * Truncate oversized text payloads in a raw JSON event line so that peek
+ * output remains readable even when the subagent read or wrote large files.
+ *
+ * Text fields in tool-execution results are the main source of bloat.
+ * This parses the event, truncates any text longer than the limit,
+ * and re-serializes it. Non-JSON or malformed lines pass through unchanged.
+ */
+function truncateRawEventPayloads(line: string): string {
+	if (line.length <= RAW_EVENT_LINE_LIMIT) return line;
+
+	try {
+		const event = JSON.parse(line);
+		if (!event || typeof event !== "object") return line;
+
+		// Truncate result.text fields in tool_execution_end events
+		if (event.type === "tool_execution_end" && event.result?.content) {
+			const content = event.result.content;
+			if (Array.isArray(content)) {
+				for (const part of content) {
+					if (part?.type === "text" && typeof part.text === "string" && part.text.length > RAW_EVENT_TEXT_TRUNCATION_LIMIT) {
+						part.text = part.text.slice(0, RAW_EVENT_TEXT_TRUNCATION_LIMIT) +
+							`\n[... truncated ${part.text.length - RAW_EVENT_TEXT_TRUNCATION_LIMIT} more chars]`;
+					}
+				}
+			}
+		}
+
+		// Truncate assistant text or thinking content in message events
+		if (event.message?.content && Array.isArray(event.message.content)) {
+			for (const part of event.message.content) {
+				if (part?.type === "text" && typeof part.text === "string" && part.text.length > RAW_EVENT_TEXT_TRUNCATION_LIMIT) {
+					part.text = part.text.slice(0, RAW_EVENT_TEXT_TRUNCATION_LIMIT) +
+						`\n[... truncated ${part.text.length - RAW_EVENT_TEXT_TRUNCATION_LIMIT} more chars]`;
+				}
+				if (part?.type === "thinking" && typeof part.thinking === "string" && part.thinking.length > RAW_EVENT_TEXT_TRUNCATION_LIMIT) {
+					part.thinking = part.thinking.slice(0, RAW_EVENT_TEXT_TRUNCATION_LIMIT) +
+						`\n[... truncated ${part.thinking.length - RAW_EVENT_TEXT_TRUNCATION_LIMIT} more chars]`;
+				}
+			}
+		}
+
+		// Truncate toolResults text in turn_end events
+		if (event.type === "turn_end" && Array.isArray(event.toolResults)) {
+			for (const tr of event.toolResults) {
+				if (tr?.content && Array.isArray(tr.content)) {
+					for (const part of tr.content) {
+						if (part?.type === "text" && typeof part.text === "string" && part.text.length > RAW_EVENT_TEXT_TRUNCATION_LIMIT) {
+							part.text = part.text.slice(0, RAW_EVENT_TEXT_TRUNCATION_LIMIT) +
+								`\n[... truncated ${part.text.length - RAW_EVENT_TEXT_TRUNCATION_LIMIT} more chars]`;
+						}
+					}
+				}
+			}
+		}
+
+		// Truncate the full messages text in agent_end events
+		if (event.type === "agent_end" && Array.isArray(event.messages)) {
+			for (const msg of event.messages) {
+				if (msg?.content && Array.isArray(msg.content)) {
+					for (const part of msg.content) {
+						if (part?.type === "text" && typeof part.text === "string" && part.text.length > RAW_EVENT_TEXT_TRUNCATION_LIMIT) {
+							part.text = part.text.slice(0, RAW_EVENT_TEXT_TRUNCATION_LIMIT) +
+								`\n[... truncated ${part.text.length - RAW_EVENT_TEXT_TRUNCATION_LIMIT} more chars]`;
+						}
+					}
+				}
+			}
+		}
+
+		const serialized = JSON.stringify(event);
+		if (serialized.length < line.length) {
+			return serialized;
+		}
+		// If truncation didn't reduce size much, fall back to the original
+		return line;
+	} catch {
+		// Malformed JSON — pass through
+		return line;
+	}
+}
+
 interface SummarizedToolEvent {
 	name: string;
 	args: string;
@@ -1335,8 +1422,8 @@ export function formatJobPeek(job: BackgroundJob, options: PeekOptions): string 
 			const events = options.eventLinesByCall.find((entry) => entry.callIndex === index)?.lines ?? [];
 			if (events.length > 0) {
 				lines.push("");
-				lines.push(`Raw events for Call ${index}:`);
-				for (const raw of events) lines.push(raw);
+				lines.push(`Raw events for Call ${index} (truncated oversized payloads):`);
+				for (const raw of events) lines.push(truncateRawEventPayloads(raw));
 			}
 		}
 	}
