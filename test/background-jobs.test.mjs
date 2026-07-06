@@ -62,6 +62,20 @@ function collectText(component) {
   return [...own, ...children];
 }
 
+function makeEscalation(overrides = {}) {
+  return {
+    id: "esc_test123",
+    callIndex: 0,
+    kind: "freeform",
+    question: "Which direction should I inspect?",
+    marker: "AWAITING_CHOICE",
+    status: "open",
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Background job registry tests — isolated via clearBackgroundJobs()
 // ---------------------------------------------------------------------------
@@ -189,7 +203,7 @@ test("needs_input jobs do not count as active", async () => {
     promise: Promise.resolve(),
     onComplete: "message",
     awaitMarker: "AWAITING_CHOICE",
-    waitingForInput: { callIndex: 0, marker: "AWAITING_CHOICE", updatedAt: 1 },
+    waitingForInput: makeEscalation(),
   });
   assert.equal(getActiveBackgroundJobCount(), 0);
   removeBackgroundJob(id);
@@ -242,7 +256,11 @@ test("formatBackgroundCompletion shows needs_input state", async () => {
       calls: [{ index: 0, agent: "explorer", prompt: "Offer options", effectiveCwd: "/tmp", initialContext: "empty" }],
       callStates: [{ phase: "needs_input", startedAt: Date.now() - 8000, completedAt: Date.now() - 1000, toolCalls: 0, recentActivity: [] }],
       awaitMarker: "AWAITING_CHOICE",
-      waitingForInput: { callIndex: 0, marker: "AWAITING_CHOICE", updatedAt: Date.now() },
+      waitingForInput: makeEscalation({
+        marker: "AWAITING_CHOICE",
+        question: "1. Types\n2. Runner\n3. Cleanup",
+        updatedAt: Date.now(),
+      }),
       results: [{
         callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Offer options", initialContext: "empty",
         exitCode: 0,
@@ -276,7 +294,11 @@ test("formatBackgroundCompletion hides marker plumbing for interactive jobs", as
       awaitMarker: "AWAITING_SUBAGENT_INPUT",
       calls: [{ index: 0, agent: "explorer", prompt: "Offer options", effectiveCwd: "/tmp", initialContext: "empty" }],
       callStates: [{ phase: "needs_input", startedAt: Date.now() - 8000, completedAt: Date.now() - 1000, toolCalls: 0, recentActivity: [] }],
-      waitingForInput: { callIndex: 0, marker: "AWAITING_SUBAGENT_INPUT", updatedAt: Date.now() },
+      waitingForInput: makeEscalation({
+        marker: "AWAITING_SUBAGENT_INPUT",
+        question: "Which direction should I inspect?",
+        updatedAt: Date.now(),
+      }),
       results: [{
         callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Offer options", initialContext: "empty",
         exitCode: 0,
@@ -916,7 +938,11 @@ test("formatJobResults hides marker plumbing for interactive jobs", async () => 
       status: "needs_input",
       interactive: true,
       awaitMarker: "AWAITING_SUBAGENT_INPUT",
-      waitingForInput: { callIndex: 0, marker: "AWAITING_SUBAGENT_INPUT", updatedAt: Date.now() },
+      waitingForInput: makeEscalation({
+        marker: "AWAITING_SUBAGENT_INPUT",
+        question: "Choose one option.",
+        updatedAt: Date.now(),
+      }),
       calls: [{ index: 0, agent: "explorer", prompt: "Offer options", effectiveCwd: "/tmp", initialContext: "empty" }],
       results: [{
         callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Offer options", initialContext: "empty",

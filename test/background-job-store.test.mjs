@@ -146,11 +146,21 @@ test("persistJobState writes state.json atomically", () => {
 test("persistJobState round-trips needs_input metadata", () => {
   const baseDir = createTempBase();
   try {
+    const escalation = {
+      id: "esc_wait123",
+      callIndex: 0,
+      kind: "freeform",
+      question: "Which area should I inspect?",
+      marker: "AWAITING_CHOICE",
+      status: "open",
+      createdAt: 12300,
+      updatedAt: 12345,
+    };
     const job = makeMinimalJob("subjob_waiting_001", "needs_input", {
       callStates: [{ phase: "needs_input", toolCalls: 0, recentActivity: [], completedAt: 12345 }],
       awaitMarker: "AWAITING_CHOICE",
       interactive: true,
-      waitingForInput: { callIndex: 0, marker: "AWAITING_CHOICE", updatedAt: 12345 },
+      waitingForInput: escalation,
     });
 
     storeModule.persistJobState(baseDir, job);
@@ -160,12 +170,54 @@ test("persistJobState round-trips needs_input metadata", () => {
     assert.equal(loaded.status, "needs_input");
     assert.equal(loaded.awaitMarker, "AWAITING_CHOICE");
     assert.equal(loaded.interactive, true);
-    assert.deepEqual(loaded.waitingForInput, {
-      callIndex: 0,
-      marker: "AWAITING_CHOICE",
-      updatedAt: 12345,
-    });
+    assert.deepEqual(loaded.waitingForInput, escalation);
     assert.equal(loaded.callStates[0].phase, "needs_input");
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("loadPersistedJob hydrates legacy needs_input metadata", () => {
+  const baseDir = createTempBase();
+  try {
+    const job = makeMinimalJob("subjob_legacy_waiting_001", "needs_input", {
+      callStates: [{ phase: "needs_input", toolCalls: 0, recentActivity: [], completedAt: 12345 }],
+      awaitMarker: "AWAITING_CHOICE",
+      waitingForInput: { callIndex: 0, marker: "AWAITING_CHOICE", updatedAt: 12345 },
+      results: [
+        {
+          callIndex: 0,
+          agent: "test-agent",
+          agentSource: "user",
+          prompt: "Test prompt",
+          initialContext: "empty",
+          exitCode: 0,
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "Which area should I inspect?\nAWAITING_CHOICE" }],
+              timestamp: 1000,
+            },
+          ],
+          stderr: "",
+          usage: typesModule.emptyUsage(),
+        },
+      ],
+    });
+
+    storeModule.persistJobState(baseDir, job);
+    const loaded = storeModule.loadPersistedJob(baseDir, "subjob_legacy_waiting_001");
+    const loadedAgain = storeModule.loadPersistedJob(baseDir, "subjob_legacy_waiting_001");
+
+    assert.ok(loaded);
+    assert.match(loaded.waitingForInput.id, /^esc_[0-9a-f]{8}$/);
+    assert.equal(loadedAgain.waitingForInput.id, loaded.waitingForInput.id);
+    assert.equal(loaded.waitingForInput.kind, "freeform");
+    assert.equal(loaded.waitingForInput.status, "open");
+    assert.equal(loaded.waitingForInput.question, "Which area should I inspect?");
+    assert.equal(loaded.waitingForInput.marker, "AWAITING_CHOICE");
+    assert.equal(loaded.waitingForInput.createdAt, 12345);
+    assert.equal(loaded.waitingForInput.updatedAt, 12345);
   } finally {
     fs.rmSync(baseDir, { recursive: true, force: true });
   }

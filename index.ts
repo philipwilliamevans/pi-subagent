@@ -93,10 +93,12 @@ import {
   DEFAULT_INITIAL_CONTEXT,
   DEFAULT_INTERACTIVE_AWAIT_MARKER,
   appendInteractiveWaitInstructions,
+  createBackgroundEscalation,
   emptyUsage,
   getFinalOutput,
   isResultError,
   isResultSuccess,
+  recordBackgroundEscalationAnswer,
   validateCallIndex,
   validateMaxEvents,
   validateMaxOutputLength,
@@ -1839,11 +1841,16 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
             initialContextApplied: null,
           },
         };
+        const now = Date.now();
+        job.waitingForInput = recordBackgroundEscalationAnswer(
+          job.waitingForInput,
+          params.prompt,
+          now,
+        );
         job.calls[callIndex] = continuationCall;
         job.status = "running";
-        job.waitingForInput = undefined;
         job.abortController = new AbortController();
-        job.updatedAt = Date.now();
+        job.updatedAt = now;
         job.callStates[callIndex] = {
           phase: "queued",
           toolCalls: 0,
@@ -2304,18 +2311,22 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         const hasError = results.some((r) => isResultError(r));
         const waitingCallIndex = getAwaitingInputCallIndex(job, results);
         if (!hasError && waitingCallIndex !== null) {
+          const now = Date.now();
           job.status = "needs_input";
-          job.waitingForInput = {
-            callIndex: waitingCallIndex,
-            marker: job.awaitMarker!,
-            updatedAt: Date.now(),
-          };
+          job.waitingForInput = createBackgroundEscalation(
+            results[waitingCallIndex],
+            waitingCallIndex,
+            job.awaitMarker!,
+            now,
+          );
           const cs = job.callStates[waitingCallIndex];
           cs.phase = "needs_input";
-          cs.completedAt = Date.now();
+          cs.completedAt = now;
         } else {
           job.status = hasError ? "failed" : "completed";
-          job.waitingForInput = undefined;
+          if (job.waitingForInput?.status === "open") {
+            job.waitingForInput = undefined;
+          }
         }
       }
       job.results = results;
@@ -2395,19 +2406,25 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         job.status = "cancelled";
       } else if (isResultError(result)) {
         job.status = "failed";
-        job.waitingForInput = undefined;
+        if (job.waitingForInput?.status === "open") {
+          job.waitingForInput = undefined;
+        }
       } else if (job.awaitMarker && getFinalOutput(result.messages).includes(job.awaitMarker)) {
+        const now = Date.now();
         job.status = "needs_input";
-        job.waitingForInput = {
+        job.waitingForInput = createBackgroundEscalation(
+          result,
           callIndex,
-          marker: job.awaitMarker,
-          updatedAt: Date.now(),
-        };
+          job.awaitMarker,
+          now,
+        );
         job.callStates[callIndex].phase = "needs_input";
-        job.callStates[callIndex].completedAt = Date.now();
+        job.callStates[callIndex].completedAt = now;
       } else {
         job.status = "completed";
-        job.waitingForInput = undefined;
+        if (job.waitingForInput?.status === "open") {
+          job.waitingForInput = undefined;
+        }
       }
 
       job.results = results;

@@ -2,6 +2,7 @@
  * Shared type definitions for the subagent extension.
  */
 
+import { randomUUID } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
 import { getFinalAssistantText } from "./runner-events.js";
 
@@ -93,12 +94,22 @@ export interface WorktreeMetadata {
 	patchPath?: string;
 }
 
-/** Parked input request for a background job-owned child session. */
-export interface BackgroundInputRequest {
+/** Durable human input request for a background job-owned child session. */
+export interface BackgroundEscalation {
+	id: string;
 	callIndex: number;
+	kind: "freeform" | "choice";
+	question: string;
 	marker: string;
+	status: "open" | "answered" | "cancelled";
+	createdAt: number;
 	updatedAt: number;
+	answeredAt?: number;
+	answer?: string;
 }
+
+/** Compatibility alias for older code paths that used "input request". */
+export type BackgroundInputRequest = BackgroundEscalation;
 
 /** In-memory background job tracking entry. */
 export interface BackgroundJob {
@@ -127,7 +138,7 @@ export interface BackgroundJob {
 	/** Whether awaitMarker was configured by the semantic interactive mode. */
 	interactive?: boolean;
 	/** Current input request when the job is parked awaiting user direction. */
-	waitingForInput?: BackgroundInputRequest;
+	waitingForInput?: BackgroundEscalation;
 }
 
 /** Aggregated token usage from a subagent run. */
@@ -262,6 +273,51 @@ export function normalizeCompletedResult(result: SingleResult, wasAborted: boole
 /** Extract the last assistant text from a message history. */
 export function getFinalOutput(messages: Message[]): string {
 	return getFinalAssistantText(messages);
+}
+
+/** Remove a final await-marker line without changing the question body. */
+export function stripAwaitMarker(output: string, marker: string): string {
+	if (!marker) return output;
+	const trimmed = output.trimEnd();
+	const lines = trimmed.split(/\r?\n/);
+	const lastLine = lines[lines.length - 1];
+	if (lastLine?.trim() !== marker) return output;
+	lines.pop();
+	return lines.join("\n").trimEnd();
+}
+
+/** Create a structured escalation record for a parked background job. */
+export function createBackgroundEscalation(
+	result: Pick<SingleResult, "messages">,
+	callIndex: number,
+	marker: string,
+	now = Date.now(),
+): BackgroundEscalation {
+	return {
+		id: `esc_${randomUUID().slice(0, 8)}`,
+		callIndex,
+		kind: "freeform",
+		question: stripAwaitMarker(getFinalOutput(result.messages), marker),
+		marker,
+		status: "open",
+		createdAt: now,
+		updatedAt: now,
+	};
+}
+
+/** Mark an open escalation as answered by the user. */
+export function recordBackgroundEscalationAnswer(
+	escalation: BackgroundEscalation,
+	answer: string,
+	now = Date.now(),
+): BackgroundEscalation {
+	return {
+		...escalation,
+		status: "answered",
+		answer,
+		answeredAt: now,
+		updatedAt: now,
+	};
 }
 
 /** Extract all display-worthy items from a message history. */

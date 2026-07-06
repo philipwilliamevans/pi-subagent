@@ -17,8 +17,9 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
+  BackgroundEscalation,
   BackgroundJob,
   BackgroundJobStatus,
   NormalizedCall,
@@ -27,8 +28,8 @@ import type {
   CallState,
   WorktreeMode,
   WorktreeMetadata,
-  BackgroundInputRequest,
 } from "./types.js";
+import { getFinalOutput, stripAwaitMarker } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -62,8 +63,16 @@ interface PersistedJobState {
   worktreeMetadata?: WorktreeMetadata;
   awaitMarker?: string;
   interactive?: boolean;
-  waitingForInput?: BackgroundInputRequest;
+  waitingForInput?: PersistedEscalation;
 }
+
+type LegacyInputRequest = {
+  callIndex: number;
+  marker: string;
+  updatedAt: number;
+};
+
+type PersistedEscalation = BackgroundEscalation | LegacyInputRequest;
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -154,11 +163,56 @@ function hydrateJob(state: PersistedJobState): BackgroundJob {
     worktreeMetadata: state.worktreeMetadata,
     awaitMarker: state.awaitMarker,
     interactive: state.interactive,
-    waitingForInput: state.waitingForInput,
+    waitingForInput: hydrateEscalation(state),
     // Unserializable — set to safe defaults
     promise: Promise.resolve(),
     abortController: undefined,
   };
+}
+
+function hydrateEscalation(state: PersistedJobState): BackgroundEscalation | undefined {
+  const waitingForInput = state.waitingForInput;
+  if (!waitingForInput) return undefined;
+
+  const current = waitingForInput as Partial<BackgroundEscalation>;
+  const now = state.updatedAt || Date.now();
+  const callIndex = typeof current.callIndex === "number" ? current.callIndex : 0;
+  const marker = typeof current.marker === "string" ? current.marker : state.awaitMarker ?? "";
+  const updatedAt = typeof current.updatedAt === "number" ? current.updatedAt : now;
+  const createdAt = typeof current.createdAt === "number" ? current.createdAt : updatedAt;
+  const result = state.results?.[callIndex];
+  const fallbackQuestion = result ? stripAwaitMarker(getFinalOutput(result.messages), marker) : "";
+
+  const escalation: BackgroundEscalation = {
+    id: typeof current.id === "string" && current.id
+      ? current.id
+      : deriveLegacyEscalationId(state.jobId, callIndex, marker, createdAt),
+    callIndex,
+    kind: current.kind === "choice" ? "choice" : "freeform",
+    question: typeof current.question === "string" ? current.question : fallbackQuestion,
+    marker,
+    status: current.status === "answered" || current.status === "cancelled"
+      ? current.status
+      : "open",
+    createdAt,
+    updatedAt,
+  };
+  if (typeof current.answeredAt === "number") escalation.answeredAt = current.answeredAt;
+  if (typeof current.answer === "string") escalation.answer = current.answer;
+  return escalation;
+}
+
+function deriveLegacyEscalationId(
+  jobId: string,
+  callIndex: number,
+  marker: string,
+  createdAt: number,
+): string {
+  const digest = createHash("sha256")
+    .update(`${jobId}\0${callIndex}\0${marker}\0${createdAt}`)
+    .digest("hex")
+    .slice(0, 8);
+  return `esc_${digest}`;
 }
 
 function hasConfirmedCancellationState(callStates: CallState[] | undefined): boolean {
