@@ -182,6 +182,9 @@ with an answer, call \`subagent_continue\` and pass the user's reply verbatim
 as \`prompt\`. Do not ask the user for a job ID, do not expose tool syntax,
 and do not mention markers. If the intended escalation is ambiguous, use
 \`subagent_status\` to inspect pending jobs.
+After calling \`subagent_continue\`, acknowledge briefly and naturally. Do not
+repeat the subagent's previous question unless the user asks, and do not claim
+the subagent has finished until a completion message arrives.
 \`awaitMarker\` exists only as an advanced/debug override.
 
 Background jobs do not support caller-supplied persistent sessions (\`session\`).

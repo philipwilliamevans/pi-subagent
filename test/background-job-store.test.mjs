@@ -177,6 +177,49 @@ test("persistJobState round-trips needs_input metadata", () => {
   }
 });
 
+test("persistJobState round-trips escalation history", () => {
+  const baseDir = createTempBase();
+  try {
+    const answered = {
+      id: "esc_answered",
+      callIndex: 0,
+      kind: "freeform",
+      question: "Which area should I inspect?",
+      marker: "AWAITING_CHOICE",
+      status: "answered",
+      answer: "Runner",
+      createdAt: 10000,
+      answeredAt: 11000,
+      updatedAt: 11000,
+    };
+    const waiting = {
+      id: "esc_waiting2",
+      callIndex: 0,
+      kind: "freeform",
+      question: "Should I inspect tests next?",
+      marker: "AWAITING_CHOICE",
+      status: "open",
+      createdAt: 12000,
+      updatedAt: 12000,
+    };
+    const job = makeMinimalJob("subjob_history_001", "needs_input", {
+      callStates: [{ phase: "needs_input", toolCalls: 0, recentActivity: [], completedAt: 12000 }],
+      awaitMarker: "AWAITING_CHOICE",
+      escalations: [answered, waiting],
+      waitingForInput: waiting,
+    });
+
+    storeModule.persistJobState(baseDir, job);
+    const loaded = storeModule.loadPersistedJob(baseDir, "subjob_history_001");
+
+    assert.ok(loaded);
+    assert.deepEqual(loaded.waitingForInput, waiting);
+    assert.deepEqual(loaded.escalations, [answered, waiting]);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("loadPersistedJob hydrates legacy needs_input metadata", () => {
   const baseDir = createTempBase();
   try {

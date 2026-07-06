@@ -137,6 +137,8 @@ export interface BackgroundJob {
 	awaitMarker?: string;
 	/** Whether awaitMarker was configured by the semantic interactive mode. */
 	interactive?: boolean;
+	/** Historical input requests for this job, including answered requests. */
+	escalations?: BackgroundEscalation[];
 	/** Current input request when the job is parked awaiting user direction. */
 	waitingForInput?: BackgroundEscalation;
 }
@@ -328,6 +330,26 @@ export function recordBackgroundEscalationAnswer(
 		answeredAt: now,
 		updatedAt: now,
 	};
+}
+
+/** Add or replace an escalation in a job's escalation history. */
+export function upsertBackgroundEscalation(
+	escalations: BackgroundEscalation[] | undefined,
+	escalation: BackgroundEscalation,
+): BackgroundEscalation[] {
+	const next = escalations ? [...escalations] : [];
+	const index = next.findIndex((item) => item.id === escalation.id);
+	if (index === -1) {
+		next.push(escalation);
+	} else {
+		next[index] = escalation;
+	}
+	return next;
+}
+
+/** Parent-facing acknowledgement after routing a user reply to a parked subagent. */
+export function formatSubagentContinueAcknowledgement(agent: string): string {
+	return `Sent that direction to the waiting ${agent} subagent.\n\nThe subagent will continue in the same session. I will report back when it finishes or asks another question.`;
 }
 
 /** Build hidden routing metadata for an injected parked-job message. */

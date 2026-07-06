@@ -97,10 +97,12 @@ import {
   createBackgroundEscalation,
   emptyUsage,
   formatBackgroundEscalationDetails,
+  formatSubagentContinueAcknowledgement,
   getFinalOutput,
   isResultError,
   isResultSuccess,
   recordBackgroundEscalationAnswer,
+  upsertBackgroundEscalation,
   validateCallIndex,
   validateMaxEvents,
   validateMaxOutputLength,
@@ -1844,11 +1846,13 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           },
         };
         const now = Date.now();
-        job.waitingForInput = recordBackgroundEscalationAnswer(
+        const answeredEscalation = recordBackgroundEscalationAnswer(
           job.waitingForInput,
           params.prompt,
           now,
         );
+        job.escalations = upsertBackgroundEscalation(job.escalations, answeredEscalation);
+        job.waitingForInput = undefined;
         job.calls[callIndex] = continuationCall;
         job.status = "running";
         job.abortController = new AbortController();
@@ -1875,10 +1879,16 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           content: [
             {
               type: "text",
-              text: `Continuing background subagent job \`${job.id}\` call ${callIndex} in the same child session.\n\nThe result will be posted to this session when the continuation finishes or parks again.`,
+              text: formatSubagentContinueAcknowledgement(originalCall.agent),
             },
           ],
-          details: makeDetails(job.results ?? []),
+          details: {
+            ...makeDetails(job.results ?? []),
+            jobId: job.id,
+            escalationId: answeredEscalation.id,
+            callIndex,
+            status: "running",
+          },
         };
       },
 
@@ -2338,6 +2348,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
             job.awaitMarker!,
             now,
           );
+          job.escalations = upsertBackgroundEscalation(job.escalations, job.waitingForInput);
           const cs = job.callStates[waitingCallIndex];
           cs.phase = "needs_input";
           cs.completedAt = now;
@@ -2437,6 +2448,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           job.awaitMarker,
           now,
         );
+        job.escalations = upsertBackgroundEscalation(job.escalations, job.waitingForInput);
         job.callStates[callIndex].phase = "needs_input";
         job.callStates[callIndex].completedAt = now;
       } else {

@@ -63,6 +63,7 @@ interface PersistedJobState {
   worktreeMetadata?: WorktreeMetadata;
   awaitMarker?: string;
   interactive?: boolean;
+  escalations?: PersistedEscalation[];
   waitingForInput?: PersistedEscalation;
 }
 
@@ -148,6 +149,9 @@ function hydrateJob(state: PersistedJobState): BackgroundJob {
       : "interrupted";
   }
 
+  const waitingForInput = hydrateEscalation(state, state.waitingForInput);
+  const escalations = hydrateEscalations(state, waitingForInput);
+
   return {
     id: state.jobId,
     createdAt: state.createdAt,
@@ -163,18 +167,21 @@ function hydrateJob(state: PersistedJobState): BackgroundJob {
     worktreeMetadata: state.worktreeMetadata,
     awaitMarker: state.awaitMarker,
     interactive: state.interactive,
-    waitingForInput: hydrateEscalation(state),
+    escalations,
+    waitingForInput,
     // Unserializable — set to safe defaults
     promise: Promise.resolve(),
     abortController: undefined,
   };
 }
 
-function hydrateEscalation(state: PersistedJobState): BackgroundEscalation | undefined {
-  const waitingForInput = state.waitingForInput;
-  if (!waitingForInput) return undefined;
+function hydrateEscalation(
+  state: PersistedJobState,
+  persisted: PersistedEscalation | undefined,
+): BackgroundEscalation | undefined {
+  if (!persisted) return undefined;
 
-  const current = waitingForInput as Partial<BackgroundEscalation>;
+  const current = persisted as Partial<BackgroundEscalation>;
   const now = state.updatedAt || Date.now();
   const callIndex = typeof current.callIndex === "number" ? current.callIndex : 0;
   const marker = typeof current.marker === "string" ? current.marker : state.awaitMarker ?? "";
@@ -200,6 +207,22 @@ function hydrateEscalation(state: PersistedJobState): BackgroundEscalation | und
   if (typeof current.answeredAt === "number") escalation.answeredAt = current.answeredAt;
   if (typeof current.answer === "string") escalation.answer = current.answer;
   return escalation;
+}
+
+function hydrateEscalations(
+  state: PersistedJobState,
+  waitingForInput: BackgroundEscalation | undefined,
+): BackgroundEscalation[] | undefined {
+  const persisted = Array.isArray(state.escalations) ? state.escalations : [];
+  const escalations = persisted
+    .map((entry) => hydrateEscalation(state, entry))
+    .filter((entry): entry is BackgroundEscalation => Boolean(entry));
+
+  if (waitingForInput && !escalations.some((entry) => entry.id === waitingForInput.id)) {
+    escalations.push(waitingForInput);
+  }
+
+  return escalations.length > 0 ? escalations : undefined;
 }
 
 function deriveLegacyEscalationId(
@@ -243,6 +266,7 @@ function serializeJob(job: BackgroundJob): PersistedJobState {
     worktreeMetadata: job.worktreeMetadata,
     awaitMarker: job.awaitMarker,
     interactive: job.interactive,
+    escalations: job.escalations,
     waitingForInput: job.waitingForInput,
   };
 }

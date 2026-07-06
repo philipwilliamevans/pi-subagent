@@ -66,6 +66,48 @@ test("recordBackgroundEscalationAnswer preserves identity and stores the answer"
   assert.equal(answered.createdAt, 100);
 });
 
+test("upsertBackgroundEscalation appends and updates escalation history", () => {
+  const first = {
+    id: "esc_first1",
+    callIndex: 0,
+    kind: "freeform",
+    question: "Which path?",
+    marker: "AWAITING_CHOICE",
+    status: "open",
+    createdAt: 100,
+    updatedAt: 100,
+  };
+  const second = {
+    id: "esc_second",
+    callIndex: 0,
+    kind: "freeform",
+    question: "Anything else?",
+    marker: "AWAITING_CHOICE",
+    status: "open",
+    createdAt: 300,
+    updatedAt: 300,
+  };
+
+  const answered = types.recordBackgroundEscalationAnswer(first, "Take option 2", 200);
+  const withFirst = types.upsertBackgroundEscalation(undefined, first);
+  const withAnswered = types.upsertBackgroundEscalation(withFirst, answered);
+  const withSecond = types.upsertBackgroundEscalation(withAnswered, second);
+
+  assert.equal(withSecond.length, 2);
+  assert.deepEqual(withSecond[0], answered);
+  assert.deepEqual(withSecond[1], second);
+});
+
+test("formatSubagentContinueAcknowledgement is concise and parent-facing", () => {
+  const text = types.formatSubagentContinueAcknowledgement("explorer");
+
+  assert.equal(
+    text,
+    "Sent that direction to the waiting explorer subagent.\n\nThe subagent will continue in the same session. I will report back when it finishes or asks another question.",
+  );
+  assert.doesNotMatch(text, /job|call|marker|subagent_continue/i);
+});
+
 test("formatBackgroundEscalationDetails returns hidden routing metadata", () => {
   const details = types.formatBackgroundEscalationDetails({
     id: "subjob_waiting",
