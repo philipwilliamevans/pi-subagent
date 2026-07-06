@@ -178,6 +178,16 @@ export interface SubagentDetails {
 	results: SingleResult[];
 }
 
+/** Hidden routing metadata attached to a parked subagent follow-up message. */
+export interface BackgroundEscalationMessageDetails {
+	type: "subagent_escalation";
+	jobId: string;
+	escalationId: string;
+	callIndex: number;
+	agent?: string;
+	status: "needs_input";
+}
+
 /** A display-friendly representation of a message part. */
 export type DisplayItem =
 	| { type: "text"; text: string }
@@ -317,6 +327,21 @@ export function recordBackgroundEscalationAnswer(
 		answer,
 		answeredAt: now,
 		updatedAt: now,
+	};
+}
+
+/** Build hidden routing metadata for an injected parked-job message. */
+export function formatBackgroundEscalationDetails(
+	job: Pick<BackgroundJob, "id" | "calls"> & { waitingForInput: BackgroundEscalation },
+): BackgroundEscalationMessageDetails {
+	const waitingForInput = job.waitingForInput;
+	return {
+		type: "subagent_escalation",
+		jobId: job.id,
+		escalationId: waitingForInput.id,
+		callIndex: waitingForInput.callIndex,
+		agent: job.calls[waitingForInput.callIndex]?.agent,
+		status: "needs_input",
 	};
 }
 

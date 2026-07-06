@@ -65,3 +65,29 @@ test("recordBackgroundEscalationAnswer preserves identity and stores the answer"
   assert.equal(answered.updatedAt, 200);
   assert.equal(answered.createdAt, 100);
 });
+
+test("formatBackgroundEscalationDetails returns hidden routing metadata", () => {
+  const details = types.formatBackgroundEscalationDetails({
+    id: "subjob_waiting",
+    calls: [{ index: 0, agent: "explorer", prompt: "Offer options", effectiveCwd: "/tmp", initialContext: "empty" }],
+    waitingForInput: {
+      id: "esc_waiting",
+      callIndex: 0,
+      kind: "freeform",
+      question: "Which path?",
+      marker: "AWAITING_SUBAGENT_INPUT",
+      status: "open",
+      createdAt: 100,
+      updatedAt: 100,
+    },
+  });
+
+  assert.deepEqual(details, {
+    type: "subagent_escalation",
+    jobId: "subjob_waiting",
+    escalationId: "esc_waiting",
+    callIndex: 0,
+    agent: "explorer",
+    status: "needs_input",
+  });
+});

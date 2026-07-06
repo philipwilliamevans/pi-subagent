@@ -175,8 +175,13 @@ when you need the complete response text.
 
 For interactive background jobs, set top-level \`interactive: true\`.
 The extension will instruct the subagent how to pause for user direction.
-When the job parks as \`needs_input\`, route the user's natural reply to
-\`subagent_continue\`; do not ask the user to mention a job ID or marker.
+When the job parks as \`needs_input\`, the user sees a normal follow-up
+question while routing metadata is attached in hidden message details.
+If exactly one unresolved subagent escalation exists and the user replies
+with an answer, call \`subagent_continue\` and pass the user's reply verbatim
+as \`prompt\`. Do not ask the user for a job ID, do not expose tool syntax,
+and do not mention markers. If the intended escalation is ambiguous, use
+\`subagent_status\` to inspect pending jobs.
 \`awaitMarker\` exists only as an advanced/debug override.
 
 Background jobs do not support caller-supplied persistent sessions (\`session\`).

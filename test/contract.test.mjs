@@ -73,7 +73,10 @@ test("background contract prefers interactive mode over marker plumbing", () => 
 
   assert.match(combined, /interactive: true/);
   assert.match(combined, /advanced\/debug override/i);
-  assert.match(combined, /route the user's natural reply/i);
+  assert.match(combined, /normal follow-up\s+question while routing metadata is attached/i);
+  assert.match(combined, /exactly one unresolved subagent escalation/i);
+  assert.match(combined, /pass the user's reply verbatim/i);
+  assert.match(combined, /do not ask the user for a job ID/i);
 });
 
 test("appendInteractiveWaitInstructions adds default wait guidance", () => {

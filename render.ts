@@ -469,6 +469,27 @@ export function formatBackgroundCompletion(job: BackgroundJob): string {
 	return lines.join("\n");
 }
 
+/**
+ * Natural human-facing text for a parked background job.
+ *
+ * Routing metadata is attached separately to the injected message details, so
+ * this text intentionally avoids job IDs, call indexes, markers, and tool syntax.
+ */
+export function formatBackgroundEscalation(job: BackgroundJob): string {
+	const waitingForInput = job.waitingForInput;
+	const call = waitingForInput ? job.calls[waitingForInput.callIndex] : job.calls[0];
+	const agentName = call?.agent ?? "background";
+	const question = waitingForInput?.question.trim() || "The subagent is waiting for your direction.";
+
+	return [
+		`The ${agentName} subagent is waiting for your direction:`,
+		"",
+		question,
+		"",
+		"Reply with your choice or instruction.",
+	].join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Status formatting helpers
 // ---------------------------------------------------------------------------

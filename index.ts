@@ -45,6 +45,7 @@ import {
 } from "./contract.js";
 import {
   formatBackgroundCompletion,
+  formatBackgroundEscalation,
   formatJobPeek,
   formatJobList,
   formatJobResults,
@@ -95,6 +96,7 @@ import {
   appendInteractiveWaitInstructions,
   createBackgroundEscalation,
   emptyUsage,
+  formatBackgroundEscalationDetails,
   getFinalOutput,
   isResultError,
   isResultSuccess,
@@ -2204,6 +2206,23 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
    */
   function postCompletionMessage(job: BackgroundJob): void {
     if (job.onComplete === "silent") return;
+
+    if (job.status === "needs_input" && job.waitingForInput) {
+      const details = formatBackgroundEscalationDetails(job);
+      pi.sendMessage(
+        {
+          customType: "subagent-escalation",
+          display: true,
+          content: [{ type: "text", text: formatBackgroundEscalation(job) }],
+          details,
+        },
+        {
+          deliverAs: "followUp",
+          triggerTurn: job.onComplete === "trigger",
+        },
+      );
+      return;
+    }
 
     pi.sendMessage(
       {

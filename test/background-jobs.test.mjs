@@ -318,6 +318,44 @@ test("formatBackgroundCompletion hides marker plumbing for interactive jobs", as
   }
 });
 
+test("formatBackgroundEscalation shows only natural user-facing text", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatBackgroundEscalation } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_hidden",
+      createdAt: Date.now() - 8000,
+      updatedAt: Date.now(),
+      status: "needs_input",
+      onComplete: "trigger",
+      interactive: true,
+      awaitMarker: "AWAITING_SUBAGENT_INPUT",
+      calls: [{ index: 0, agent: "explorer", prompt: "Offer options", effectiveCwd: "/tmp", initialContext: "empty" }],
+      callStates: [{ phase: "needs_input", startedAt: Date.now() - 8000, completedAt: Date.now() - 1000, toolCalls: 0, recentActivity: [] }],
+      waitingForInput: makeEscalation({
+        id: "esc_hidden",
+        marker: "AWAITING_SUBAGENT_INPUT",
+        question: "I found three useful directions:\n1. Session handling\n2. Worktree ownership\n3. Escalation state\n\nWhich should I explore?",
+        updatedAt: Date.now(),
+      }),
+      results: [],
+    };
+
+    const text = formatBackgroundEscalation(job);
+    assert.match(text, /^The explorer subagent is waiting for your direction:/);
+    assert.match(text, /Which should I explore\?/);
+    assert.match(text, /Reply with your choice or instruction\./);
+    assert.doesNotMatch(text, /subjob_hidden/);
+    assert.doesNotMatch(text, /esc_hidden/);
+    assert.doesNotMatch(text, /call 0/);
+    assert.doesNotMatch(text, /AWAITING_SUBAGENT_INPUT/);
+    assert.doesNotMatch(text, /subagent_continue/);
+  } finally {
+    cleanup();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // FormatJobStatus
 // ---------------------------------------------------------------------------
