@@ -209,6 +209,71 @@ test("needs_input jobs do not count as active", async () => {
   removeBackgroundJob(id);
 });
 
+test("getOpenEscalations returns only open needs_input requests", async () => {
+  const {
+    clearBackgroundJobs,
+    getOpenEscalations,
+    registerBackgroundJob,
+    removeBackgroundJob,
+  } = await import("../background-jobs.ts");
+  clearBackgroundJobs();
+
+  const openJob = {
+    id: "subjob_open",
+    createdAt: 100,
+    updatedAt: 110,
+    status: "needs_input",
+    calls: [{ index: 0, agent: "explorer", prompt: "", effectiveCwd: "/tmp", initialContext: "empty" }],
+    promise: Promise.resolve(),
+    onComplete: "trigger",
+    callStates: [{ phase: "needs_input", toolCalls: 0, recentActivity: [] }],
+    waitingForInput: makeEscalation({
+      id: "esc_open",
+      question: "Which topic?",
+      createdAt: 105,
+    }),
+  };
+  const answeredJob = {
+    ...openJob,
+    id: "subjob_answered",
+    waitingForInput: makeEscalation({
+      id: "esc_answered",
+      status: "answered",
+      question: "Already answered?",
+      createdAt: 106,
+    }),
+  };
+  const runningJob = {
+    ...openJob,
+    id: "subjob_running",
+    status: "running",
+    waitingForInput: makeEscalation({
+      id: "esc_running",
+      question: "Not parked?",
+      createdAt: 107,
+    }),
+  };
+
+  registerBackgroundJob(openJob);
+  registerBackgroundJob(answeredJob);
+  registerBackgroundJob(runningJob);
+
+  assert.deepEqual(getOpenEscalations(), [
+    {
+      jobId: "subjob_open",
+      escalationId: "esc_open",
+      agent: "explorer",
+      question: "Which topic?",
+      createdAt: 105,
+      callIndex: 0,
+    },
+  ]);
+
+  removeBackgroundJob("subjob_open");
+  removeBackgroundJob("subjob_answered");
+  removeBackgroundJob("subjob_running");
+});
+
 // ---------------------------------------------------------------------------
 // FormatBackgroundCompletion — cancellation
 // ---------------------------------------------------------------------------
@@ -384,6 +449,34 @@ test("formatJobStatus shows running job", async () => {
     assert.match(text, /started/);
     assert.match(text, /explorer/);
     assert.match(text, /reviewer/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobStatus shows compact waiting-for-input section", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobStatus } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_wait_status",
+      createdAt: Date.now() - 30000,
+      updatedAt: Date.now() - 10000,
+      status: "needs_input",
+      onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "", effectiveCwd: "/tmp", initialContext: "empty" }],
+      callStates: [{ phase: "needs_input", toolCalls: 0, recentActivity: [] }],
+      waitingForInput: makeEscalation({
+        id: "esc_wait_status",
+        question: "Which follow-up topic should I explore?",
+      }),
+    };
+
+    const text = formatJobStatus(job);
+    assert.match(text, /Waiting for input:/);
+    assert.match(text, /1\. subjob_wait_status explorer: Which follow-up topic should I explore\?/);
+    assert.doesNotMatch(text, /subagent_continue/);
   } finally {
     cleanup();
   }
@@ -601,6 +694,82 @@ test("formatJobList shows mixed states with summary", async () => {
     assert.match(text, /subjob_c.*failed/);
     assert.match(text, /subjob_d.*cancelled/);
     assert.match(text, /1 running.*1 completed.*1 failed.*1 cancelled/);
+    assert.doesNotMatch(text, /Waiting for input:/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobList shows one pending escalation", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobList } = await import(moduleUrl);
+
+    const jobs = [
+      {
+        id: "subjob_wait_one",
+        createdAt: Date.now() - 30000,
+        updatedAt: Date.now() - 10000,
+        status: "needs_input",
+        calls: [{ index: 0, agent: "explorer", prompt: "", effectiveCwd: "/tmp", initialContext: "empty" }],
+        promise: Promise.resolve(),
+        onComplete: "trigger",
+        callStates: [{ phase: "needs_input", toolCalls: 0, recentActivity: [] }],
+        waitingForInput: makeEscalation({
+          id: "esc_wait_one",
+          question: "Which follow-up topic should I explore?",
+        }),
+      },
+    ];
+
+    const text = formatJobList(jobs);
+    assert.match(text, /Waiting for input:/);
+    assert.match(text, /1\. subjob_wait_one explorer: Which follow-up topic should I explore\?/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatJobList shows multiple pending escalations", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatJobList } = await import(moduleUrl);
+
+    const jobs = [
+      {
+        id: "subjob_alpha",
+        createdAt: Date.now() - 30000,
+        updatedAt: Date.now() - 10000,
+        status: "needs_input",
+        calls: [{ index: 0, agent: "explorer", prompt: "", effectiveCwd: "/tmp", initialContext: "empty" }],
+        promise: Promise.resolve(),
+        onComplete: "trigger",
+        callStates: [{ phase: "needs_input", toolCalls: 0, recentActivity: [] }],
+        waitingForInput: makeEscalation({
+          id: "esc_alpha",
+          question: "Choose a follow-up topic.",
+        }),
+      },
+      {
+        id: "subjob_beta",
+        createdAt: Date.now() - 40000,
+        updatedAt: Date.now() - 15000,
+        status: "needs_input",
+        calls: [{ index: 0, agent: "reviewer", prompt: "", effectiveCwd: "/tmp", initialContext: "empty" }],
+        promise: Promise.resolve(),
+        onComplete: "trigger",
+        callStates: [{ phase: "needs_input", toolCalls: 0, recentActivity: [] }],
+        waitingForInput: makeEscalation({
+          id: "esc_beta",
+          question: "Approve the simpler fix or investigate root cause?",
+        }),
+      },
+    ];
+
+    const text = formatJobList(jobs);
+    assert.match(text, /Waiting for input:/);
+    assert.match(text, /1\. subjob_alpha explorer: Choose a follow-up topic\./);
+    assert.match(text, /2\. subjob_beta reviewer: Approve the simpler fix or investigate root cause\?/);
   } finally {
     cleanup();
   }

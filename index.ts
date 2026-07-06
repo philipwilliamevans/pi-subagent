@@ -21,6 +21,7 @@ import {
   registerBackgroundJob,
   getBackgroundJob,
   getAllBackgroundJobs,
+  getOpenEscalations,
   setJobStoreBaseDir,
   reloadPersistedJobs,
   updateBackgroundJobStatus,
@@ -271,9 +272,16 @@ const SubagentResultParams = Type.Object({
 });
 
 const SubagentContinueParams = Type.Object({
-  jobId: Type.String({
-    description: "ID of the background job parked in needs_input.",
-  }),
+  jobId: Type.Optional(
+    Type.String({
+      description: "ID of the background job parked in needs_input. Optional when escalationId is provided.",
+    }),
+  ),
+  escalationId: Type.Optional(
+    Type.String({
+      description: "ID of the open escalation to answer. Prefer this over callIndex when hidden routing metadata is available.",
+    }),
+  ),
   prompt: Type.String({
     description: "Direction to send to the waiting subagent session.",
   }),
@@ -1753,12 +1761,60 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           };
         }
 
-        const job = getBackgroundJob(params.jobId);
+        let job: BackgroundJob | undefined;
+        const escalationId = typeof params.escalationId === "string"
+          ? params.escalationId.trim()
+          : "";
+        const jobId = typeof params.jobId === "string" ? params.jobId.trim() : "";
+
+        if (!jobId && !escalationId) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "`subagent_continue` requires either `jobId` or `escalationId`.",
+              },
+            ],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+
+        if (escalationId) {
+          const target = getOpenEscalations().find((item) => item.escalationId === escalationId);
+          if (!target) {
+            const waiting = getOpenEscalations()
+              .map((item) => `  ${item.escalationId} (${item.jobId} ${item.agent})`)
+              .join("\n");
+            const hint = waiting ? `Open escalations:\n${waiting}` : "No open subagent escalations.";
+            return {
+              content: [{ type: "text", text: `Unknown open escalation: \`${escalationId}\`.\n${hint}` }],
+              details: makeDetails([]),
+              isError: true,
+            };
+          }
+          if (jobId && jobId !== target.jobId) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Escalation \`${escalationId}\` belongs to job \`${target.jobId}\`, not \`${jobId}\`.`,
+                },
+              ],
+              details: makeDetails([]),
+              isError: true,
+            };
+          }
+          job = getBackgroundJob(target.jobId);
+        } else {
+          job = getBackgroundJob(jobId);
+        }
+
         if (!job) {
           const ids = getAllBackgroundJobs().map((j) => `  ${j.id} (${j.status})`).join("\n");
           const hint = ids ? `Known jobs:\n${ids}` : "No background subagent jobs.";
           return {
-            content: [{ type: "text", text: `Unknown background job: \`${params.jobId}\`.\n${hint}` }],
+            content: [{ type: "text", text: `Unknown background job: \`${jobId}\`.\n${hint}` }],
             details: makeDetails([]),
             isError: true,
           };
@@ -1785,7 +1841,22 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           };
         }
 
-        const callIndex = params.callIndex ?? job.waitingForInput.callIndex;
+        if (escalationId && job.waitingForInput.id !== escalationId) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Escalation \`${escalationId}\` is no longer open on job \`${job.id}\`.`,
+              },
+            ],
+            details: makeDetails(job.results ?? []),
+            isError: true,
+          };
+        }
+
+        const callIndex = escalationId
+          ? job.waitingForInput.callIndex
+          : params.callIndex ?? job.waitingForInput.callIndex;
         const callIndexError = validateCallIndex(callIndex, job.calls.length - 1);
         if (callIndexError) {
           return {

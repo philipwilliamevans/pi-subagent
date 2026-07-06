@@ -111,6 +111,16 @@ export interface BackgroundEscalation {
 /** Compatibility alias for older code paths that used "input request". */
 export type BackgroundInputRequest = BackgroundEscalation;
 
+/** Open escalation with enough routing context for status and continuation. */
+export interface BackgroundOpenEscalation {
+	jobId: string;
+	escalationId: string;
+	agent: string;
+	question: string;
+	createdAt: number;
+	callIndex: number;
+}
+
 /** In-memory background job tracking entry. */
 export interface BackgroundJob {
 	id: string;

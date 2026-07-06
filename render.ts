@@ -8,6 +8,7 @@ import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { getProcessErrorText, getResultSummaryText } from "./runner-events.js";
 import {
 	type BackgroundJob,
+	type BackgroundOpenEscalation,
 	type CallState,
 	type DisplayItem,
 	type InitialContext,
@@ -69,6 +70,10 @@ function shortenPath(p: string): string {
 
 function oneLine(text: unknown): string {
 	return typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
+}
+
+function truncateOneLine(text: string, maxLen: number): string {
+	return truncate(oneLine(text), maxLen);
 }
 
 function getResultPrompt(result: SingleResult & { task?: unknown }): string {
@@ -561,6 +566,36 @@ function formatWorktreeMetadataLines(job: BackgroundJob): string[] {
 	return lines;
 }
 
+function getOpenEscalationsFromJobs(jobs: BackgroundJob[]): BackgroundOpenEscalation[] {
+	return jobs
+		.filter((job) => job.status === "needs_input" && job.waitingForInput?.status === "open")
+		.map((job) => {
+			const escalation = job.waitingForInput!;
+			return {
+				jobId: job.id,
+				escalationId: escalation.id,
+				agent: job.calls[escalation.callIndex]?.agent ?? `call ${escalation.callIndex}`,
+				question: escalation.question,
+				createdAt: escalation.createdAt,
+				callIndex: escalation.callIndex,
+			};
+		});
+}
+
+export function formatOpenEscalations(escalations: BackgroundOpenEscalation[]): string[] {
+	if (escalations.length === 0) return [];
+	return [
+		"Waiting for input:",
+		...escalations.map((escalation, index) => {
+			const question = truncateOneLine(
+				escalation.question || "The subagent is waiting for direction.",
+				160,
+			);
+			return `${index + 1}. ${escalation.jobId} ${escalation.agent}: ${question}`;
+		}),
+	];
+}
+
 export function formatJobStatus(job: BackgroundJob): string {
 	const age = job.createdAt ? formatAge(job.createdAt) : "";
 	const duration = job.results ? formatElapsed(job.createdAt, job.updatedAt) : "";
@@ -584,14 +619,7 @@ export function formatJobStatus(job: BackgroundJob): string {
 			? `interrupted ${age} ago (took ${duration})`
 			: `took ${duration} (finished ${age} ago)`;
 
-	const waitingLines = job.status === "needs_input" && job.waitingForInput
-		? [
-			job.interactive
-				? `  Waiting on call ${job.waitingForInput.callIndex} for user direction`
-				: `  Waiting on call ${job.waitingForInput.callIndex} at marker \`${job.waitingForInput.marker}\``,
-			`  Continue: subagent_continue({ jobId: "${job.id}", prompt: "..." })`,
-		]
-		: [];
+	const waitingLines = formatOpenEscalations(getOpenEscalationsFromJobs([job]));
 
 	return [
 		`${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}${worktreeSuffix}${scopeLine}`,
@@ -626,6 +654,11 @@ export function formatJobList(jobs: BackgroundJob[]): string {
 			when = `took ${duration} (finished ${age} ago)`;
 		}
 		lines.push(`  ${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}${worktreeSuffix}`);
+	}
+
+	const waitingLines = formatOpenEscalations(getOpenEscalationsFromJobs(jobs));
+	if (waitingLines.length > 0) {
+		lines.push("", ...waitingLines);
 	}
 
 	lines.push("");

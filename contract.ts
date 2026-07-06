@@ -179,9 +179,13 @@ When the job parks as \`needs_input\`, the user sees a normal follow-up
 question while routing metadata is attached in hidden message details.
 If exactly one unresolved subagent escalation exists and the user replies
 with an answer, call \`subagent_continue\` and pass the user's reply verbatim
-as \`prompt\`. Do not ask the user for a job ID, do not expose tool syntax,
-and do not mention markers. If the intended escalation is ambiguous, use
-\`subagent_status\` to inspect pending jobs.
+as \`prompt\`. Use hidden \`escalationId\` routing metadata when available;
+otherwise use the job shown by \`subagent_status\`. If multiple escalations
+are open and the target is unclear, ask a normal clarification question like
+"Which subagent should I answer?" If the user names an agent, topic, or
+obvious option, use that to pick the escalation. Do not ask the user for a job ID
+unless they are intentionally using advanced tooling. Do not expose tool syntax,
+and do not mention markers.
 After calling \`subagent_continue\`, acknowledge briefly and naturally. Do not
 repeat the subagent's previous question unless the user asks, and do not claim
 the subagent has finished until a completion message arrives.
@@ -346,9 +350,12 @@ export function formatSubagentContinueToolDescription(): string {
     "Use this after an interactive `subagent_start` job stops to ask for",
     "direction. The prompt is sent to the same job-owned child session.",
     "Parent agents should route the user's natural reply here silently.",
+    "When available, provide `escalationId`; it selects the parked call and takes precedence over `callIndex`.",
+    "`jobId` remains supported for advanced/manual use and older routing.",
     "",
     "Examples:",
     '  { "jobId": "subjob_abc123", "prompt": "Explore option 2." }',
+    '  { "escalationId": "esc_abc123", "prompt": "Explore option 2." }',
     '  { "jobId": "subjob_abc123", "callIndex": 0, "prompt": "Go deeper on cleanup risk." }',
   ].join("\n");
 }

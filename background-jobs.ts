@@ -10,7 +10,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { BackgroundJob } from "./types.js";
+import type { BackgroundJob, BackgroundOpenEscalation } from "./types.js";
 // Note: .ts extension required — this is a runtime value import (not type-only), and
 // Node.js cannot resolve .js -> .ts for local files without a custom loader.
 import {
@@ -142,6 +142,31 @@ export function getAllBackgroundJobs(): BackgroundJob[] {
   const jobs = Array.from(backgroundJobs.values());
   jobs.reverse(); // most recent first
   return jobs;
+}
+
+/**
+ * Return all currently open human-input escalations across background jobs.
+ *
+ * The returned shape includes both the durable escalation ID and enough
+ * display context for parent-agent routing decisions.
+ */
+export function getOpenEscalations(): BackgroundOpenEscalation[] {
+  const open: BackgroundOpenEscalation[] = [];
+  for (const job of getAllBackgroundJobs()) {
+    const escalation = job.waitingForInput;
+    if (job.status !== "needs_input" || !escalation || escalation.status !== "open") {
+      continue;
+    }
+    open.push({
+      jobId: job.id,
+      escalationId: escalation.id,
+      agent: job.calls[escalation.callIndex]?.agent ?? `call ${escalation.callIndex}`,
+      question: escalation.question,
+      createdAt: escalation.createdAt,
+      callIndex: escalation.callIndex,
+    });
+  }
+  return open;
 }
 
 // ---------------------------------------------------------------------------
