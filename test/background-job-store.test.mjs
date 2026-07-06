@@ -143,6 +143,32 @@ test("persistJobState writes state.json atomically", () => {
   }
 });
 
+test("persistJobState round-trips needs_input metadata", () => {
+  const baseDir = createTempBase();
+  try {
+    const job = makeMinimalJob("subjob_waiting_001", "needs_input", {
+      callStates: [{ phase: "needs_input", toolCalls: 0, recentActivity: [], completedAt: 12345 }],
+      awaitMarker: "AWAITING_CHOICE",
+      waitingForInput: { callIndex: 0, marker: "AWAITING_CHOICE", updatedAt: 12345 },
+    });
+
+    storeModule.persistJobState(baseDir, job);
+    const loaded = storeModule.loadPersistedJob(baseDir, "subjob_waiting_001");
+
+    assert.ok(loaded);
+    assert.equal(loaded.status, "needs_input");
+    assert.equal(loaded.awaitMarker, "AWAITING_CHOICE");
+    assert.deepEqual(loaded.waitingForInput, {
+      callIndex: 0,
+      marker: "AWAITING_CHOICE",
+      updatedAt: 12345,
+    });
+    assert.equal(loaded.callStates[0].phase, "needs_input");
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("persistJobState updates existing state", () => {
   const baseDir = createTempBase();
   try {

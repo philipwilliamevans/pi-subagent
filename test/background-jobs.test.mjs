@@ -174,6 +174,27 @@ test("cancelled jobs do not count as active", async () => {
   removeBackgroundJob(id);
 });
 
+test("needs_input jobs do not count as active", async () => {
+  const { clearBackgroundJobs, generateJobId, registerBackgroundJob, getActiveBackgroundJobCount, removeBackgroundJob } = await import("../background-jobs.ts");
+  clearBackgroundJobs();
+
+  const id = generateJobId();
+  registerBackgroundJob({
+    id,
+    createdAt: 0,
+    updatedAt: 0,
+    status: "needs_input",
+    calls: [],
+    callStates: [],
+    promise: Promise.resolve(),
+    onComplete: "message",
+    awaitMarker: "AWAITING_CHOICE",
+    waitingForInput: { callIndex: 0, marker: "AWAITING_CHOICE", updatedAt: 1 },
+  });
+  assert.equal(getActiveBackgroundJobCount(), 0);
+  removeBackgroundJob(id);
+});
+
 // ---------------------------------------------------------------------------
 // FormatBackgroundCompletion — cancellation
 // ---------------------------------------------------------------------------
@@ -202,6 +223,39 @@ test("formatBackgroundCompletion shows cancelled state", async () => {
     assert.match(text, /subjob_cancelled1/);
     assert.match(text, /was cancelled/);
     assert.match(text, /call 1: cancelled/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("formatBackgroundCompletion shows needs_input state", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { formatBackgroundCompletion } = await import(moduleUrl);
+
+    const job = {
+      id: "subjob_wait1",
+      createdAt: Date.now() - 8000,
+      updatedAt: Date.now(),
+      status: "needs_input",
+      onComplete: "trigger",
+      calls: [{ index: 0, agent: "explorer", prompt: "Offer options", effectiveCwd: "/tmp", initialContext: "empty" }],
+      callStates: [{ phase: "needs_input", startedAt: Date.now() - 8000, completedAt: Date.now() - 1000, toolCalls: 0, recentActivity: [] }],
+      awaitMarker: "AWAITING_CHOICE",
+      waitingForInput: { callIndex: 0, marker: "AWAITING_CHOICE", updatedAt: Date.now() },
+      results: [{
+        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Offer options", initialContext: "empty",
+        exitCode: 0,
+        messages: [{ role: "assistant", content: [{ type: "text", text: "1. Types\n2. Runner\n3. Cleanup\nAWAITING_CHOICE" }], timestamp: 1 }],
+        stderr: "",
+        usage: { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+      }],
+    };
+
+    const text = formatBackgroundCompletion(job);
+    assert.match(text, /is awaiting input/);
+    assert.match(text, /AWAITING_CHOICE/);
+    assert.match(text, /subagent_continue/);
   } finally {
     cleanup();
   }

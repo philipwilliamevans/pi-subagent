@@ -373,6 +373,10 @@ function formatCallStatusLabel(r: SingleResult | undefined): string {
 	return "completed";
 }
 
+function isParkedJob(job: BackgroundJob): boolean {
+	return job.status === "needs_input";
+}
+
 const EXCERPT_MAX_LENGTH = 2000;
 
 /**
@@ -385,7 +389,10 @@ export function formatBackgroundCompletion(job: BackgroundJob): string {
 
 	let verb: string;
 	let statusLabel: string;
-	if (job.status === "cancelled") {
+	if (job.status === "needs_input") {
+		verb = "Background subagent job";
+		statusLabel = "is awaiting input";
+	} else if (job.status === "cancelled") {
 		verb = "Background subagent job";
 		statusLabel = "was cancelled";
 	} else if (job.status === "interrupted") {
@@ -432,6 +439,14 @@ export function formatBackgroundCompletion(job: BackgroundJob): string {
 
 			lines.push(`- ${agentName} call ${index + 1}: ${callStatus}${toolCallInfo}${excerpt}${truncationNotice}`);
 		}
+	}
+
+	if (isParkedJob(job) && job.waitingForInput) {
+		lines.push(
+			"",
+			`Waiting on call ${job.waitingForInput.callIndex} at marker \`${job.waitingForInput.marker}\`.`,
+			`Continue with \`subagent_continue\` using jobId \`${job.id}\`.`,
+		);
 	}
 
 	if (job.error) {
@@ -529,13 +544,23 @@ export function formatJobStatus(job: BackgroundJob): string {
 
 	const when = job.status === "running" || job.status === "cancelling"
 		? `started ${age} ago`
+		: job.status === "needs_input"
+			? `waiting ${age} ago (ran ${duration})`
 		: job.status === "interrupted"
 			? `interrupted ${age} ago (took ${duration})`
 			: `took ${duration} (finished ${age} ago)`;
 
+	const waitingLines = job.status === "needs_input" && job.waitingForInput
+		? [
+			`  Waiting on call ${job.waitingForInput.callIndex} at marker \`${job.waitingForInput.marker}\``,
+			`  Continue: subagent_continue({ jobId: "${job.id}", prompt: "..." })`,
+		]
+		: [];
+
 	return [
 		`${job.id}: ${job.status}, ${job.calls.length} call${job.calls.length === 1 ? "" : "s"}, ${when}${worktreeSuffix}${scopeLine}`,
 		...formatWorktreeMetadataLines(job),
+		...waitingLines,
 		...callLines,
 	].join("\n");
 }
@@ -557,6 +582,8 @@ export function formatJobList(jobs: BackgroundJob[]): string {
 		let when: string;
 		if (job.status === "running" || job.status === "cancelling") {
 			when = `started ${age} ago`;
+		} else if (job.status === "needs_input") {
+			when = `waiting ${age} ago (ran ${duration})`;
 		} else if (job.status === "interrupted") {
 			when = `interrupted ${age} ago (took ${duration})`;
 		} else {
@@ -568,12 +595,14 @@ export function formatJobList(jobs: BackgroundJob[]): string {
 	lines.push("");
 
 	const running = jobs.filter((j) => j.status === "running" || j.status === "cancelling").length;
+	const needsInput = jobs.filter((j) => j.status === "needs_input").length;
 	const completed = jobs.filter((j) => j.status === "completed").length;
 	const failed = jobs.filter((j) => j.status === "failed").length;
 	const cancelled = jobs.filter((j) => j.status === "cancelled").length;
 	const interrupted = jobs.filter((j) => j.status === "interrupted").length;
 	const parts: string[] = [];
 	if (running > 0) parts.push(`${running} running`);
+	if (needsInput > 0) parts.push(`${needsInput} needs_input`);
 	if (completed > 0) parts.push(`${completed} completed`);
 	if (failed > 0) parts.push(`${failed} failed`);
 	if (cancelled > 0) parts.push(`${cancelled} cancelled`);
@@ -628,7 +657,11 @@ export function formatJobResults(
 		const summary = getResultSummaryText(r);
 		const items = includeToolCalls ? getDisplayItems(r.messages) : [];
 
-		lines.push(`## ${r.agent} — ${isResultError(r) ? "failed" : "completed"}`);
+		const headingStatus =
+			job.status === "needs_input" && job.waitingForInput?.callIndex === (r.callIndex ?? targetResults.indexOf(r))
+				? "needs_input"
+				: isResultError(r) ? "failed" : "completed";
+		lines.push(`## ${r.agent} — ${headingStatus}`);
 		lines.push("");
 
 		if (summary && summary !== "(no output)") {
@@ -1010,6 +1043,56 @@ export function renderSubagentResultResult(
 			0,
 		),
 	);
+	container.addChild(new Spacer(1));
+	container.addChild(new Markdown(text.trim(), 0, 0, mdTheme));
+	return container;
+}
+
+// ---------------------------------------------------------------------------
+// Render for subagent_continue
+// ---------------------------------------------------------------------------
+
+/**
+ * Render for subagent_continue tool call.
+ */
+export function renderContinueCall(
+	args: Record<string, any>,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text {
+	const jobId = typeof args.jobId === "string" ? args.jobId : "?";
+	const prompt = typeof args.prompt === "string" ? truncate(oneLine(args.prompt), 60) : "";
+	const callIndex = Number.isInteger(args.callIndex)
+		? theme.fg("muted", ` call=${args.callIndex}`)
+		: "";
+	const preview = prompt ? theme.fg("dim", ` ${prompt}`) : "";
+	return new Text(
+		theme.fg("toolTitle", theme.bold("subagent_continue ")) +
+			theme.fg("accent", jobId) +
+			callIndex +
+			preview,
+		0,
+		0,
+	);
+}
+
+/**
+ * Render for subagent_continue tool result.
+ */
+export function renderContinueResult(
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+	_expanded: boolean,
+	theme: { fg: ThemeFg; bold: (s: string) => string },
+): Text | Container {
+	const first = result.content[0];
+	const text = first?.type === "text" && first.text ? first.text : "";
+
+	if (!text) {
+		return new Text("(no output)", 0, 0);
+	}
+
+	const mdTheme = getMarkdownTheme();
+	const container = new Container();
+	container.addChild(new Text(theme.fg("warning", "◐ ") + theme.fg("toolTitle", theme.bold("subagent_continue ")) + theme.fg("muted", "resumed"), 0, 0));
 	container.addChild(new Spacer(1));
 	container.addChild(new Markdown(text.trim(), 0, 0, mdTheme));
 	return container;

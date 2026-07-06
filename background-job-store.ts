@@ -27,6 +27,7 @@ import type {
   CallState,
   WorktreeMode,
   WorktreeMetadata,
+  BackgroundInputRequest,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -59,6 +60,8 @@ interface PersistedJobState {
   worktreeMode?: WorktreeMode;
   worktreeScope?: string;
   worktreeMetadata?: WorktreeMetadata;
+  awaitMarker?: string;
+  waitingForInput?: BackgroundInputRequest;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +151,8 @@ function hydrateJob(state: PersistedJobState): BackgroundJob {
     worktreeMode: state.worktreeMode,
     worktreeScope: state.worktreeScope,
     worktreeMetadata: state.worktreeMetadata,
+    awaitMarker: state.awaitMarker,
+    waitingForInput: state.waitingForInput,
     // Unserializable — set to safe defaults
     promise: Promise.resolve(),
     abortController: undefined,
@@ -180,6 +185,8 @@ function serializeJob(job: BackgroundJob): PersistedJobState {
     worktreeMode: job.worktreeMode,
     worktreeScope: job.worktreeScope,
     worktreeMetadata: job.worktreeMetadata,
+    awaitMarker: job.awaitMarker,
+    waitingForInput: job.waitingForInput,
   };
 }
 

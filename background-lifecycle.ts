@@ -10,7 +10,7 @@ import type { BackgroundJob, SingleResult } from "./types.js";
 import { isResultError } from "./types.js";
 
 /**
- * Mark all non-terminal call states (queued, spawning, running) as cancelled.
+ * Mark all actively-running call states (queued, spawning, running) as cancelled.
  *
  * Called synchronously when the cancellation is confirmed so that
  * in-flight or not-yet-started calls are immediately reflected as
@@ -33,7 +33,7 @@ export function markPendingCallsCancelled(job: BackgroundJob, now: number): void
  *  - If the job is/was being cancelled and the call is already marked
  *    cancelled, preserve that cancelled status.
  *  - If the call already reached a terminal state before cancellation
- *    (completed / failed / cancelled), keep it unchanged.
+ *    (needs_input / completed / failed / cancelled), keep it unchanged.
  *  - Otherwise, set the phase based on the result (completed or failed).
  *
  * Returns the phase that was set (or preserved).
@@ -43,7 +43,7 @@ export function finishCallState(
   index: number,
   result: SingleResult,
   now: number,
-): "completed" | "failed" | "cancelled" {
+): "needs_input" | "completed" | "failed" | "cancelled" {
   const cs = job.callStates[index];
 
   // If the job is/was being cancelled and the call was already marked
@@ -54,7 +54,7 @@ export function finishCallState(
   }
 
   // Skip if already in a terminal state (e.g. completed before cancellation).
-  if (cs.phase === "completed" || cs.phase === "failed" || cs.phase === "cancelled") {
+  if (cs.phase === "needs_input" || cs.phase === "completed" || cs.phase === "failed" || cs.phase === "cancelled") {
     return cs.phase;
   }
 

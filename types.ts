@@ -36,6 +36,7 @@ export interface NormalizedCall {
 /** Background job status. */
 export type BackgroundJobStatus =
   | "running"
+  | "needs_input"
   | "cancelling"
   | "cancelled"
   | "completed"
@@ -47,6 +48,7 @@ export type CallLifecyclePhase =
   | "queued"
   | "spawning"
   | "running"
+  | "needs_input"
   | "completed"
   | "failed"
   | "cancelled";
@@ -77,6 +79,13 @@ export interface WorktreeMetadata {
 	patchPath?: string;
 }
 
+/** Parked input request for a background job-owned child session. */
+export interface BackgroundInputRequest {
+	callIndex: number;
+	marker: string;
+	updatedAt: number;
+}
+
 /** In-memory background job tracking entry. */
 export interface BackgroundJob {
 	id: string;
@@ -99,6 +108,10 @@ export interface BackgroundJob {
 	worktreeScope?: string;
 	/** Populated when running in isolated worktree mode. */
 	worktreeMetadata?: WorktreeMetadata;
+	/** Marker that parks the job in needs_input when seen in successful output. */
+	awaitMarker?: string;
+	/** Current input request when the job is parked awaiting user direction. */
+	waitingForInput?: BackgroundInputRequest;
 }
 
 /** Aggregated token usage from a subagent run. */

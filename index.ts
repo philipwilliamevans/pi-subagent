@@ -34,6 +34,7 @@ import {
   CALLS_SCHEMA_DESCRIPTION,
   formatAvailableSubagentsPrompt,
   formatSubagentCancelToolDescription,
+  formatSubagentContinueToolDescription,
   formatSubagentPeekToolDescription,
   formatSubagentResultToolDescription,
   formatSubagentStartToolDescription,
@@ -53,6 +54,8 @@ import {
   renderCall,
   renderCancelCall,
   renderCancelResult,
+  renderContinueCall,
+  renderContinueResult,
   renderJobStatusCall,
   renderJobStatusResult,
   renderSubagentPeekCall,
@@ -182,6 +185,12 @@ const SubagentStartParams = Type.Object({
         'Optional file/path scope declaration for this job, e.g. "src/*.ts" or "docs/". Helps identify potential conflicts between concurrent jobs.',
     }),
   ),
+  awaitMarker: Type.Optional(
+    Type.String({
+      description:
+        'Optional marker such as "AWAITING_CHOICE". For single-call jobs, successful output containing this marker parks the job as needs_input for subagent_continue.',
+    }),
+  ),
 });
 
 const SubagentStatusParams = Type.Object({
@@ -242,6 +251,21 @@ const SubagentResultParams = Type.Object({
         "Maximum characters of output text per call (1–50000). Default: no limit.",
       minimum: 1,
       maximum: 50000,
+    }),
+  ),
+});
+
+const SubagentContinueParams = Type.Object({
+  jobId: Type.String({
+    description: "ID of the background job parked in needs_input.",
+  }),
+  prompt: Type.String({
+    description: "Direction to send to the waiting subagent session.",
+  }),
+  callIndex: Type.Optional(
+    Type.Integer({
+      description: "0-based call index to continue. Omit to use the parked call.",
+      minimum: 0,
     }),
   ),
 });
@@ -722,6 +746,32 @@ function getNamedSessionParentError(
   }
   if (ctx.sessionManager.getSessionFile()) return null;
   return "Named subagent sessions require a persisted parent Pi session. Omit `session` for ephemeral delegation, or run the parent without --no-session.";
+}
+
+function getBackgroundSessionParentError(ctx: ExtensionExecutionContext): string | null {
+  if (parseBoolean(process.env[SUBAGENT_TEMP_PARENT_SESSION_ENV]) === true) {
+    return "Interactive background subagent jobs are not available from temporary parent-seeded subagent sessions.";
+  }
+  if (ctx.sessionManager.getSessionFile()) return null;
+  return "Interactive background subagent jobs require a persisted parent Pi session. Run the parent without --no-session, or omit `awaitMarker` for a non-interactive background job.";
+}
+
+function assignBackgroundOwnedSessions(
+  job: BackgroundJob,
+  parentSessionId: string,
+): void {
+  for (const call of job.calls) {
+    const handle = `background:${job.id}:call:${call.index}`;
+    call.sessionHandle = handle;
+    call.session = {
+      handle,
+      id: deriveSessionId(parentSessionId, call.effectiveCwd, call.agent, handle),
+      name: formatSessionDisplayName(call.agent, handle),
+      cwd: call.effectiveCwd,
+      created: true,
+      initialContextApplied: call.initialContext,
+    };
+  }
 }
 
 function sessionBaseDir(call: NormalizedCall, sessionDir: string | undefined): string {
@@ -1325,6 +1375,33 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           };
         }
         const calls = normalized.calls;
+        const awaitMarker = typeof params.awaitMarker === "string"
+          ? params.awaitMarker.trim()
+          : undefined;
+        if (params.awaitMarker !== undefined && !awaitMarker) {
+          return {
+            content: [{ type: "text", text: "`awaitMarker` must be a non-empty string when provided." }],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+        if (awaitMarker && calls.length !== 1) {
+          return {
+            content: [{ type: "text", text: "`awaitMarker` is currently supported only for single-call background jobs." }],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+        if (awaitMarker) {
+          const parentError = getBackgroundSessionParentError(ctx as ExtensionExecutionContext);
+          if (parentError) {
+            return {
+              content: [{ type: "text", text: parentError }],
+              details: makeDetails([]),
+              isError: true,
+            };
+          }
+        }
 
         // --- Reject persistent sessions in background mode ---
         for (const call of calls) {
@@ -1441,6 +1518,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         const jobId = generateJobId();
         const createdAt = Date.now();
         const abortController = new AbortController();
+        const persistentSessionDir = getPersistentSessionDir(ctx as ExtensionExecutionContext);
 
         const callStates: CallState[] = calls.map(() => ({
           phase: "queued" as const,
@@ -1460,6 +1538,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           abortController,
           worktreeMode,
           worktreeScope: params.worktreeScope,
+          awaitMarker,
         };
 
         // Populate promise with async execution.
@@ -1467,6 +1546,8 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           job,
           agents,
           ctx.cwd,
+          ctx.sessionManager.getSessionId(),
+          persistentSessionDir,
           makeDetails,
         );
 
@@ -1490,7 +1571,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           content: [
             {
               type: "text",
-              text: `Started background subagent job \`${jobId}\` with ${calls.length} call${calls.length === 1 ? "" : "s"}.\n\n${callList}\n\nThe result will be posted to this session when complete.\n\n${worktreeNote}`,
+              text: `Started background subagent job \`${jobId}\` with ${calls.length} call${calls.length === 1 ? "" : "s"}.\n\n${callList}\n\n${awaitMarker ? `This job will park at \`${awaitMarker}\` and wait for \`subagent_continue\`.` : "The result will be posted to this session when complete."}\n\n${worktreeNote}`,
             },
           ],
           details: makeDetails([]),
@@ -1607,6 +1688,166 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       renderCall: (args, theme) => renderSubagentPeekCall(args, theme),
       renderResult: (result, { expanded }, theme) =>
         renderSubagentPeekResult(result, expanded, theme),
+    });
+
+    // -----------------------------------------------------------------------
+    // subagent_continue — resume a parked background subagent session
+    // -----------------------------------------------------------------------
+
+    pi.registerTool({
+      name: "subagent_continue",
+      label: "Continue background subagent",
+      description: formatSubagentContinueToolDescription(),
+      parameters: SubagentContinueParams,
+
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+        const discovery = starterDiscovery.discovery;
+        const { agents } = discovery;
+        const makeDetails = makeDetailsFactory(discovery.projectAgentsDir);
+
+        if (currentDepth > 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "`subagent_continue` can only be run from the root parent Pi session.",
+              },
+            ],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+
+        const job = getBackgroundJob(params.jobId);
+        if (!job) {
+          const ids = getAllBackgroundJobs().map((j) => `  ${j.id} (${j.status})`).join("\n");
+          const hint = ids ? `Known jobs:\n${ids}` : "No background subagent jobs.";
+          return {
+            content: [{ type: "text", text: `Unknown background job: \`${params.jobId}\`.\n${hint}` }],
+            details: makeDetails([]),
+            isError: true,
+          };
+        }
+
+        if (job.status !== "needs_input" || !job.waitingForInput) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Job \`${job.id}\` is ${job.status}, not needs_input. Only parked jobs can be continued.`,
+              },
+            ],
+            details: makeDetails(job.results ?? []),
+            isError: true,
+          };
+        }
+
+        if (typeof params.prompt !== "string" || params.prompt.trim().length === 0) {
+          return {
+            content: [{ type: "text", text: "`prompt` must be a non-empty string." }],
+            details: makeDetails(job.results ?? []),
+            isError: true,
+          };
+        }
+
+        const callIndex = params.callIndex ?? job.waitingForInput.callIndex;
+        const callIndexError = validateCallIndex(callIndex, job.calls.length - 1);
+        if (callIndexError) {
+          return {
+            content: [{ type: "text", text: callIndexError }],
+            details: makeDetails(job.results ?? []),
+            isError: true,
+          };
+        }
+        if (callIndex !== job.waitingForInput.callIndex) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Job \`${job.id}\` is waiting on call ${job.waitingForInput.callIndex}. Continue that call or omit \`callIndex\`.`,
+              },
+            ],
+            details: makeDetails(job.results ?? []),
+            isError: true,
+          };
+        }
+
+        const originalCall = job.calls[callIndex];
+        if (!originalCall.session) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Job \`${job.id}\` has no job-owned session metadata for call ${callIndex}; it cannot be continued.`,
+              },
+            ],
+            details: makeDetails(job.results ?? []),
+            isError: true,
+          };
+        }
+
+        if (getActiveBackgroundJobCount() >= MAX_BACKGROUND_JOBS) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Too many background subagent jobs already running (max ${MAX_BACKGROUND_JOBS}). Wait for a running job to complete, then retry \`subagent_continue\`.`,
+              },
+            ],
+            details: makeDetails(job.results ?? []),
+            isError: true,
+          };
+        }
+
+        const persistentSessionDir = getPersistentSessionDir(ctx as ExtensionExecutionContext);
+        const continuationCall: NormalizedCall = {
+          ...originalCall,
+          prompt: params.prompt,
+          initialContext: "empty",
+          session: {
+            ...originalCall.session,
+            created: false,
+            initialContextApplied: null,
+          },
+        };
+        job.calls[callIndex] = continuationCall;
+        job.status = "running";
+        job.waitingForInput = undefined;
+        job.abortController = new AbortController();
+        job.updatedAt = Date.now();
+        job.callStates[callIndex] = {
+          phase: "queued",
+          toolCalls: 0,
+          recentActivity: [],
+        };
+        persistBackgroundJob(job);
+
+        job.promise = continueBackgroundSubagentJob(
+          job,
+          continuationCall,
+          callIndex,
+          agents,
+          ctx.cwd,
+          persistentSessionDir,
+          makeDetails,
+        );
+        persistBackgroundJob(job);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Continuing background subagent job \`${job.id}\` call ${callIndex} in the same child session.\n\nThe result will be posted to this session when the continuation finishes or parks again.`,
+            },
+          ],
+          details: makeDetails(job.results ?? []),
+        };
+      },
+
+      renderCall: (args, theme) => renderContinueCall(args, theme),
+      renderResult: (result, { expanded }, theme) =>
+        renderContinueResult(result, expanded, theme),
     });
 
     // -----------------------------------------------------------------------
@@ -1959,6 +2200,8 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
     job: BackgroundJob,
     agents: AgentConfig[],
     defaultCwd: string,
+    parentSessionId: string,
+    persistentSessionDir: string | undefined,
     makeDetails: ReturnType<typeof makeDetailsFactory>,
   ): Promise<void> {
     if (job.worktreeMode === "isolated") {
@@ -1997,48 +2240,33 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
     }
 
     try {
+      if (job.awaitMarker) {
+        assignBackgroundOwnedSessions(job, parentSessionId);
+        try {
+          await resolveSessionCreationState(job.calls, persistentSessionDir);
+        } catch (error) {
+          throw new Error(
+            `Failed to inspect existing background subagent sessions: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+        job.updatedAt = Date.now();
+        persistBackgroundJob(job);
+      }
+
       const results = await mapConcurrent(
         job.calls,
         MAX_BACKGROUND_CONCURRENCY,
-        async (call, index) => {
-          const cs = job.callStates[index];
-          cs.phase = "spawning";
-          cs.startedAt = Date.now();
-          cs.phase = "running";
-
-          const result = await runAgent({
-            cwd: defaultCwd,
-            agents,
-            callIndex: call.index,
-            agentName: call.agent,
-            prompt: call.prompt,
-            callModel: call.model,
-            callCwd: call.effectiveCwd,
-            initialContext: call.initialContext,
-            parentSessionSnapshotJsonl: undefined,
-            session: undefined,
-            parentDepth: currentDepth,
-            parentAgentStack: ancestorAgentStack,
-            maxDepth,
-            preventCycles,
-            signal: job.abortController?.signal,
-            onUpdate: (partial) => {
-              const details = partial.details as SubagentDetails | undefined;
-              if (details?.results?.[0]) {
-                updateCallStateFromPartial(cs, details.results[0]);
-              }
-            },
-            onEvent: (_event, rawLine) => {
-              appendBackgroundJobEventLine(job.id, index, rawLine);
-            },
-            makeDetails,
-          });
-
-          // Phase transition based on result (use finishCallState to
-          // preserve cancelled status if cancellation fired mid‑run).
-          finishCallState(job, index, result, Date.now());
-          return result;
-        },
+        async (call, index) => runBackgroundCall(
+          job,
+          call,
+          index,
+          agents,
+          defaultCwd,
+          persistentSessionDir,
+          makeDetails,
+        ),
       );
 
       // Determine final status. Cancellation takes priority.
@@ -2046,7 +2274,21 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         job.status = "cancelled";
       } else {
         const hasError = results.some((r) => isResultError(r));
-        job.status = hasError ? "failed" : "completed";
+        const waitingCallIndex = getAwaitingInputCallIndex(job, results);
+        if (!hasError && waitingCallIndex !== null) {
+          job.status = "needs_input";
+          job.waitingForInput = {
+            callIndex: waitingCallIndex,
+            marker: job.awaitMarker!,
+            updatedAt: Date.now(),
+          };
+          const cs = job.callStates[waitingCallIndex];
+          cs.phase = "needs_input";
+          cs.completedAt = Date.now();
+        } else {
+          job.status = hasError ? "failed" : "completed";
+          job.waitingForInput = undefined;
+        }
       }
       job.results = results;
       job.updatedAt = Date.now();
@@ -2095,6 +2337,182 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       updateBackgroundJobStatus(job.id, "failed");
       setBackgroundJobResults(job.id, []);
       postCompletionMessage(job);
+    }
+  }
+
+  async function continueBackgroundSubagentJob(
+    job: BackgroundJob,
+    call: NormalizedCall,
+    callIndex: number,
+    agents: AgentConfig[],
+    defaultCwd: string,
+    persistentSessionDir: string | undefined,
+    makeDetails: ReturnType<typeof makeDetailsFactory>,
+  ): Promise<void> {
+    try {
+      const result = await runBackgroundCall(
+        job,
+        call,
+        callIndex,
+        agents,
+        defaultCwd,
+        persistentSessionDir,
+        makeDetails,
+      );
+
+      const results = job.results ? [...job.results] : [];
+      results[callIndex] = result;
+
+      if (job.status === "cancelling") {
+        job.status = "cancelled";
+      } else if (isResultError(result)) {
+        job.status = "failed";
+        job.waitingForInput = undefined;
+      } else if (job.awaitMarker && getFinalOutput(result.messages).includes(job.awaitMarker)) {
+        job.status = "needs_input";
+        job.waitingForInput = {
+          callIndex,
+          marker: job.awaitMarker,
+          updatedAt: Date.now(),
+        };
+        job.callStates[callIndex].phase = "needs_input";
+        job.callStates[callIndex].completedAt = Date.now();
+      } else {
+        job.status = "completed";
+        job.waitingForInput = undefined;
+      }
+
+      job.results = results;
+      job.updatedAt = Date.now();
+
+      if (job.worktreeMode === "isolated" && job.worktreeMetadata) {
+        collectWorktreeMetadata(job, defaultCwd);
+      }
+
+      updateBackgroundJobStatus(job.id, job.status as any);
+      setBackgroundJobResults(job.id, results);
+      const resultText = formatJobResults(job as any, {});
+      persistJobResultArtifact(job.id, resultText);
+      postCompletionMessage(job);
+    } catch (error) {
+      job.status = "failed";
+      job.updatedAt = Date.now();
+      job.error = error instanceof Error ? error.message : String(error);
+      updateBackgroundJobStatus(job.id, "failed");
+      setBackgroundJobResults(job.id, job.results ?? [], job.error);
+      postCompletionMessage(job);
+    }
+  }
+
+  async function runBackgroundCall(
+    job: BackgroundJob,
+    call: NormalizedCall,
+    index: number,
+    agents: AgentConfig[],
+    defaultCwd: string,
+    persistentSessionDir: string | undefined,
+    makeDetails: ReturnType<typeof makeDetailsFactory>,
+  ): Promise<SingleResult> {
+    const cs = job.callStates[index];
+    cs.phase = "spawning";
+    cs.startedAt = Date.now();
+    cs.completedAt = undefined;
+    cs.phase = "running";
+    persistBackgroundJob(job);
+
+    const lockResult = acquireSessionLocks(
+      getSessionLockTargets([call], persistentSessionDir),
+    );
+    if (lockResult.error) {
+      const result: SingleResult = {
+        ...makePlaceholderResult(call),
+        exitCode: 1,
+        stderr: lockResult.error,
+        stopReason: "error",
+        errorMessage: lockResult.error,
+        processError: true,
+      };
+      finishCallState(job, index, result, Date.now());
+      return result;
+    }
+
+    const reservedSessionId = call.session?.id;
+    if (reservedSessionId) activeSessionIds.add(reservedSessionId);
+
+    try {
+      const result = await runAgent({
+        cwd: defaultCwd,
+        agents,
+        callIndex: call.index,
+        agentName: call.agent,
+        prompt: call.prompt,
+        callModel: call.model,
+        callCwd: call.effectiveCwd,
+        initialContext: call.initialContext,
+        parentSessionSnapshotJsonl: undefined,
+        session: call.session,
+        persistentSessionDir,
+        parentDepth: currentDepth,
+        parentAgentStack: ancestorAgentStack,
+        maxDepth,
+        preventCycles,
+        signal: job.abortController?.signal,
+        onUpdate: (partial) => {
+          const details = partial.details as SubagentDetails | undefined;
+          if (details?.results?.[0]) {
+            updateCallStateFromPartial(cs, details.results[0]);
+          }
+        },
+        onEvent: (_event, rawLine) => {
+          appendBackgroundJobEventLine(job.id, index, rawLine);
+        },
+        makeDetails,
+      });
+
+      finishCallState(job, index, result, Date.now());
+      persistBackgroundJob(job);
+      return result;
+    } finally {
+      if (reservedSessionId) activeSessionIds.delete(reservedSessionId);
+      releaseSessionLocks(lockResult.locks);
+    }
+  }
+
+  function getAwaitingInputCallIndex(job: BackgroundJob, results: SingleResult[]): number | null {
+    if (!job.awaitMarker) return null;
+    for (const [index, result] of results.entries()) {
+      if (isResultError(result)) continue;
+      if (getFinalOutput(result.messages).includes(job.awaitMarker)) return index;
+    }
+    return null;
+  }
+
+  function collectWorktreeMetadata(job: BackgroundJob, defaultCwd: string): void {
+    if (!job.worktreeMetadata) return;
+    try {
+      const changedFiles = getWorktreeChangedFiles(job.worktreeMetadata.path);
+      job.worktreeMetadata.changedFiles = changedFiles;
+      if (changedFiles.length > 0) {
+        const patchPath = createWorktreePatch(
+          job.worktreeMetadata.path,
+          job.worktreeMetadata.baseCommit,
+          path.join(
+            getRepoRoot(defaultCwd),
+            ".pi-subagent",
+            "jobs",
+            job.id,
+            "worktree.patch",
+          ),
+        );
+        if (patchPath) job.worktreeMetadata.patchPath = patchPath;
+      }
+      job.updatedAt = Date.now();
+    } catch (error) {
+      console.warn(
+        `[pi-subagent] Failed to collect worktree metadata for job "${job.id}": ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 }

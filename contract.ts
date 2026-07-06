@@ -173,8 +173,13 @@ Retrieve the full output from a completed job using \`subagent_result\`.
 The auto-injected message includes a compact excerpt; use \`subagent_result\`
 when you need the complete response text.
 
-Background jobs do not support persistent sessions (\`session\`).
-Omit \`session\` for background delegation.
+For interactive background jobs, set top-level \`awaitMarker\` and instruct
+the subagent to end with that exact marker when it needs user direction.
+The job parks as \`needs_input\`; continue it with \`subagent_continue\`.
+
+Background jobs do not support caller-supplied persistent sessions (\`session\`).
+Omit \`session\` for background delegation. Jobs that use \`awaitMarker\`
+create an internal job-owned child session for continuation.
 
 **Important:** Background jobs run in the same working tree by default
 and can edit files concurrently with the parent or sibling jobs. Always:
@@ -241,9 +246,16 @@ export function formatSubagentStartToolDescription(): string {
     "    Helps identify potential conflicts between concurrent background jobs.",
     "  - This is also top-level, not per-call.",
     "",
+    "Optional top-level field `awaitMarker`:",
+    '  - A non-empty string such as "AWAITING_CHOICE".',
+    "  - When a successful single-call job's final output contains this marker,",
+    "    the job parks as `needs_input` instead of completing.",
+    "  - Continue the same child session with `subagent_continue`.",
+    "",
     "Restrictions:",
     "- Only available from the root parent Pi session (not from subagents).",
-    "- Persistent sessions (`session`) are not supported in background mode.",
+    "- Caller-supplied persistent sessions (`session`) are not supported in background mode.",
+    "- `awaitMarker` is currently single-call only.",
     `- Maximum ${2} concurrent background jobs.`,
     "- `initialContext: \"parent\"` is not yet supported.",
     "",
@@ -291,7 +303,7 @@ export function formatSubagentPeekToolDescription(): string {
 
 export function formatSubagentResultToolDescription(): string {
   return [
-    "Retrieve the full output from a completed background subagent job.",
+    "Retrieve the full output from a completed or parked background subagent job.",
     "",
     "Use this tool when the auto-injected completion message excerpt",
     "was truncated or you need the complete response text from a",
@@ -305,6 +317,20 @@ export function formatSubagentResultToolDescription(): string {
     '  { "jobId": "subjob_abc123" }',
     '  { "jobId": "subjob_abc123", "callIndex": 0 }',
     '  { "jobId": "subjob_abc123", "callIndex": 0, "includeToolCalls": true, "maxOutputLength": 8000 }',
+  ].join("\n");
+}
+
+export function formatSubagentContinueToolDescription(): string {
+  return [
+    "Continue a background subagent job that is parked in `needs_input`.",
+    "",
+    "Use this after `subagent_start` was called with `awaitMarker` and the",
+    "subagent stopped to ask for direction. The prompt is sent to the same",
+    "job-owned child session.",
+    "",
+    "Examples:",
+    '  { "jobId": "subjob_abc123", "prompt": "Explore option 2." }',
+    '  { "jobId": "subjob_abc123", "callIndex": 0, "prompt": "Go deeper on cleanup risk." }',
   ].join("\n");
 }
 
