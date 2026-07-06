@@ -49,6 +49,7 @@ import {
 import {
   formatBackgroundCompletion,
   formatBackgroundEscalation,
+  formatCallCompletion,
   formatPlanDetail,
   formatPlanFired,
   formatJobPeek,
@@ -1702,6 +1703,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           status: "running",
           calls,
           callStates,
+          callCompletionNotified: new Array(calls.length).fill(false),
           promise: Promise.resolve(),
           onComplete,
           abortController,
@@ -2524,7 +2526,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
   /**
    * Inject a completion message into the parent session.
    */
-  function postCompletionMessage(job: BackgroundJob): void {
+  function postCompletionMessage(job: BackgroundJob, options?: { callLevel?: boolean }): void {
     if (job.onComplete === "silent") return;
 
     if (job.status === "needs_input" && job.waitingForInput) {
@@ -2544,16 +2546,18 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       return;
     }
 
+    const isCallLevel = options?.callLevel === true;
     pi.sendMessage(
       {
         customType: "subagent-background-result",
         display: true,
-        content: [{ type: "text", text: formatBackgroundCompletion(job) }],
+        content: [{ type: "text", text: formatBackgroundCompletion(job, { callLevel: isCallLevel }) }],
         details: {
           jobId: job.id,
           status: job.status,
           results: job.results,
           error: job.error,
+          callLevel: isCallLevel,
         },
       },
       {
@@ -2564,6 +2568,38 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
 
     // After the job completion message, check if any queued plans are now ready to fire.
     processPlanQueue(job.id);
+  }
+
+  /**
+   * Send a per-call completion notification for an individual call within a multi-call job.
+   * Fires as soon as the call finishes, while siblings may still be running.
+   */
+  function postCallCompletion(
+    job: BackgroundJob,
+    result: SingleResult,
+    callIndex: number,
+  ): void {
+    if (job.onComplete === "silent") return;
+
+    job.callCompletionNotified![callIndex] = true;
+
+    pi.sendMessage(
+      {
+        customType: "subagent-call-completed",
+        display: true,
+        content: [{ type: "text", text: formatCallCompletion(job, result, callIndex) }],
+        details: {
+          jobId: job.id,
+          callIndex,
+          agent: result.agent,
+          status: job.status,
+        },
+      },
+      {
+        deliverAs: "followUp",
+        triggerTurn: job.onComplete === "trigger",
+      },
+    );
   }
 
   /**
@@ -2697,15 +2733,22 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       const results = await mapConcurrent(
         job.calls,
         MAX_BACKGROUND_CONCURRENCY,
-        async (call, index) => runBackgroundCall(
-          job,
-          call,
-          index,
-          agents,
-          defaultCwd,
-          persistentSessionDir,
-          makeDetails,
-        ),
+        async (call, index) => {
+          const result = await runBackgroundCall(
+            job,
+            call,
+            index,
+            agents,
+            defaultCwd,
+            persistentSessionDir,
+            makeDetails,
+          );
+          // Fire per-call notification immediately for multi-call jobs
+          if (job.calls.length > 1) {
+            postCallCompletion(job, result, index);
+          }
+          return result;
+        },
       );
 
       // Determine final status. Cancellation takes priority.
@@ -2780,7 +2823,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
 
       emitTerminalSubagentLifecycleEvent(job);
 
-      postCompletionMessage(job);
+      postCompletionMessage(job, { callLevel: job.calls.length > 1 });
     } catch (error) {
       job.status = "failed";
       job.updatedAt = Date.now();
@@ -2788,7 +2831,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       updateBackgroundJobStatus(job.id, "failed");
       setBackgroundJobResults(job.id, []);
       emitSubagentLifecycleEvent(pi, "pi-subagent:failed", job);
-      postCompletionMessage(job);
+      postCompletionMessage(job, { callLevel: job.callCompletionNotified?.some(Boolean) ?? false });
     }
   }
 

@@ -388,87 +388,175 @@ function formatCallStatusLabel(r: SingleResult | undefined): string {
 	return "completed";
 }
 
-function isParkedJob(job: BackgroundJob): boolean {
-	return job.status === "needs_input";
+/**
+ * Compact summary of a background job completion, suitable for message injection.
+ * Does not include output excerpts — use subagent_result for full results.
+ * Supports completed, failed, cancelled, interrupted, and needs_input states.
+ */
+export function formatBackgroundCompletion(
+	job: BackgroundJob,
+	options?: { callLevel?: boolean },
+): string {
+	const isCallLevel = options?.callLevel === true;
+	const duration = job.createdAt ? formatDuration(Date.now() - job.createdAt) : "";
+	const agentNames = [...new Set(job.calls.map((c) => c.agent))];
+
+	const lines: string[] = [];
+
+	// Status header — callLevel uses "All calls in job" phrasing
+	const jobRef = `\`${job.id}\``;
+	if (isCallLevel) {
+		if (job.status === "cancelled") {
+			lines.push(`All calls in job ${jobRef} finished. Job was cancelled.`);
+		} else if (job.status === "interrupted") {
+			lines.push(`All calls in job ${jobRef} were interrupted (the parent process exited before completion).`);
+		} else if (job.status === "failed") {
+			lines.push(`All calls in job ${jobRef} finished. Some calls failed.`);
+		} else {
+			const suffix = job.worktreeMode === "isolated" ? " in an isolated worktree" : "";
+			lines.push(`All calls in job ${jobRef} completed${suffix}.`);
+		}
+		lines.push("");
+		if (duration) lines.push(`Duration: ${duration}`);
+	} else {
+		if (job.status === "cancelled") {
+			lines.push(`Background job ${jobRef} was cancelled.`);
+		} else if (job.status === "interrupted") {
+			lines.push(`Background job ${jobRef} was interrupted (the parent process exited before it completed).`);
+		} else if (job.status === "failed") {
+			lines.push(`Background job ${jobRef} failed.`);
+		} else if (job.status === "needs_input") {
+			lines.push(`Background job ${jobRef} is awaiting your input.`);
+		} else {
+			const suffix = job.worktreeMode === "isolated" ? " in an isolated worktree" : "";
+			lines.push(`Background job ${jobRef} completed${suffix}.`);
+		}
+		lines.push("");
+		lines.push(`Agents: ${agentNames.join(", ")}`);
+		if (duration) lines.push(`Duration: ${duration}`);
+	}
+
+	// Worktree metadata (shown in both modes)
+	if (job.worktreeMetadata) {
+		const m = job.worktreeMetadata;
+		if (m.branch) lines.push(`Branch: ${m.branch}`);
+		if (m.changedFiles?.length) lines.push(`Changed files: ${m.changedFiles.length}`);
+		if (m.patchPath) lines.push(`Patch: ${m.patchPath}`);
+	}
+
+	// Result summary (shown in both modes for terminal states)
+	if (job.results && job.results.length > 0 && !["needs_input", "interrupted"].includes(job.status)) {
+		const completed = job.results.filter((r) => !isResultError(r)).length;
+		const total = job.results.length;
+		const toolCalls = job.results.reduce((sum, r) => {
+			return sum + getDisplayItems(r.messages).filter((i) => i.type === "toolCall").length;
+		}, 0);
+		lines.push(`Result: ${completed}/${total} calls completed, ${toolCalls} tool calls`);
+	}
+
+	// Error for failed jobs
+	if (job.status === "failed" && job.error) {
+		lines.push(`Error: ${job.error}`);
+	}
+
+	// Artifacts (non-worktree completed, non-callLevel)
+	if (!isCallLevel && job.status === "completed" && !job.worktreeMetadata) {
+		lines.push("Artifacts: result.md available");
+	}
+
+	// Question for needs_input (if available, non-callLevel)
+	if (!isCallLevel && job.status === "needs_input" && job.waitingForInput?.question) {
+		lines.push("");
+		lines.push(job.waitingForInput.question.trim());
+	}
+
+	// Next action
+	lines.push("");
+	if (isCallLevel) {
+		// Fleet-oriented next action after per-call notifications
+		if (["failed", "cancelled"].includes(job.status)) {
+			lines.push(`Use \`subagent_status\` to inspect, or \`subagent_result\` with jobId ${jobRef} for call details.`);
+		} else if (job.worktreeMetadata) {
+			lines.push(`Next: inspect with \`subagent_result\` before integrating changes.`);
+		} else {
+			lines.push(`Next: use \`subagent_result\` with jobId ${jobRef} to inspect individual call results, or \`subagent_status\` for the fleet view.`);
+		}
+	} else if (job.status === "failed") {
+		lines.push(`Next: use \`subagent_result\` with jobId ${jobRef} for captured output, or \`subagent_peek\` for recent events.`);
+	} else if (job.status === "needs_input") {
+		if (job.interactive) {
+			lines.push(`Reply with your choice or instruction, or use \`subagent_status\` for details.`);
+		} else {
+			lines.push(`Continue with \`subagent_continue\` using jobId ${jobRef}.`);
+		}
+	} else if (["cancelled", "interrupted"].includes(job.status)) {
+		lines.push(`Use \`subagent_status\` to inspect remaining jobs.`);
+	} else if (job.worktreeMetadata) {
+		lines.push(`Next: inspect with \`subagent_result\` before integrating changes.`);
+	} else {
+		lines.push(`Next: use \`subagent_result\` with jobId ${jobRef} to inspect the full report.`);
+	}
+
+	return lines.join("\n");
 }
 
-const EXCERPT_MAX_LENGTH = 2000;
-
 /**
- * Compact summary of a completed background job, suitable for message injection.
- * Supports completed, failed, and cancelled states.
+ * Per-call completion notification for a single subagent call within a multi-call job.
+ * Very compact — no excerpts, no job-level summary.
  */
-export function formatBackgroundCompletion(job: BackgroundJob): string {
-	const duration = job.createdAt ? formatDuration(Date.now() - job.createdAt) : "";
-	const durationLine = duration ? ` (took ${duration})` : "";
-
-	let verb: string;
-	let statusLabel: string;
-	if (job.status === "needs_input") {
-		verb = "Background subagent job";
-		statusLabel = "is awaiting input";
-	} else if (job.status === "cancelled") {
-		verb = "Background subagent job";
-		statusLabel = "was cancelled";
-	} else if (job.status === "interrupted") {
-		verb = "Background subagent job";
-		statusLabel = "was interrupted (the parent process exited before it completed)";
-	} else if (job.status === "failed") {
-		verb = "Background subagent job";
-		statusLabel = "completed with errors";
-	} else {
-		verb = "Background subagent job";
-		statusLabel = "completed successfully";
+export function formatCallCompletion(
+	job: BackgroundJob,
+	result: SingleResult,
+	callIndex: number,
+): string {
+	const totalCalls = job.calls.length;
+	const agent = result.agent || job.calls[callIndex]?.agent || `call ${callIndex}`;
+	const cs = job.callStates[callIndex];
+	let duration = "";
+	if (cs?.startedAt) {
+		const endTime = cs.completedAt ?? Date.now();
+		duration = formatDuration(endTime - cs.startedAt);
 	}
 
-	const worktreeLabel = formatWorktreeLabel(job);
-	const worktreeSuffix = worktreeLabel ? ` ${worktreeLabel}` : "";
+	// Determine per-call status
+	let statusWord: string;
+	if (result.stopReason === "aborted") {
+		statusWord = "was cancelled";
+	} else if (isResultError(result)) {
+		statusWord = "failed";
+	} else {
+		statusWord = "completed";
+	}
 
 	const lines: string[] = [
-		`${verb} \`${job.id}\` ${statusLabel}${durationLine}${worktreeSuffix}.`,
-		...formatWorktreeMetadataLines(job),
+		`Call ${callIndex + 1}/${totalCalls} (${agent}) in job \`${job.id}\` ${statusWord}.`,
 		"",
+		`Agent: ${agent}`,
 	];
 
-	if (job.results) {
-		for (const [index, r] of job.results.entries()) {
-			const callStatus = formatCallStatusLabel(r);
-			const agentName = r.agent || job.calls[index]?.agent || `call ${index}`;
-			const summary = getBackgroundResultSummary(job, r);
+	if (duration) lines.push(`Duration: ${duration}`);
 
-			// Tool call count and output size in the per-call header
-			const displayItems = getDisplayItems(r.messages);
-			const toolCallItems = displayItems.filter((i) => i.type === "toolCall");
-			const toolCallInfo = toolCallItems.length > 0
-				? ` (${toolCallItems.length} tool call${toolCallItems.length === 1 ? "" : "s"}, ${formatTokens(summary.length)} output)`
-				: "";
+	// Tool calls (for completed or failed)
+	if (statusWord !== "was cancelled") {
+		const toolCalls = getDisplayItems(result.messages).filter((i) => i.type === "toolCall").length;
+		const label = statusWord === "completed" ? "completed" : "failed";
+		const toolInfo = toolCalls > 0 ? `, ${toolCalls} tool calls` : "";
+		lines.push(`Result: ${label}${toolInfo}`);
+	}
 
-			const excerpt = summary && summary !== "(no output)"
-				? `\n  ${truncate(summary, EXCERPT_MAX_LENGTH).replace(/\n/g, "\n  ")}`
-				: "";
+	// Error for failed calls
+	if (result.stopReason !== "aborted" && (result.errorMessage || result.stderr?.trim())) {
+		lines.push(`Error: ${(result.errorMessage || result.stderr).trim()}`);
+	}
 
-			const wasTruncated = summary && summary.length > EXCERPT_MAX_LENGTH;
-			const truncationNotice = wasTruncated
-				? `\n  *Output truncated at ${EXCERPT_MAX_LENGTH} characters. Full report available via \`subagent_result\`.*`
-				: "";
-
-			lines.push(`- ${agentName} call ${index + 1}: ${callStatus}${toolCallInfo}${excerpt}${truncationNotice}`);
+	// Next action (skip for cancelled — nothing actionable)
+	if (result.stopReason !== "aborted") {
+		lines.push("");
+		if (isResultError(result)) {
+			lines.push(`Next: use \`subagent_result\` with jobId \`${job.id}\` for captured output, or \`subagent_peek\` for recent events.`);
+		} else {
+			lines.push(`Next: use \`subagent_result\` with jobId \`${job.id}\` to inspect this call.`);
 		}
-	}
-
-	if (isParkedJob(job) && job.waitingForInput) {
-		const waitingText = job.interactive
-			? `Waiting on call ${job.waitingForInput.callIndex} for user direction.`
-			: `Waiting on call ${job.waitingForInput.callIndex} at marker \`${job.waitingForInput.marker}\`.`;
-		lines.push(
-			"",
-			waitingText,
-			`Continue with \`subagent_continue\` using jobId \`${job.id}\`.`,
-		);
-	}
-
-	if (job.error) {
-		lines.push("", `Error: ${job.error}`);
 	}
 
 	return lines.join("\n");

@@ -148,6 +148,9 @@ export interface BackgroundJob {
 	/** Per-call lifecycle states, populated at job creation. */
 	callStates: CallState[];
 
+	/** Tracks which call indices have already had their per-call completion message sent. */
+	callCompletionNotified?: boolean[];
+
 	/** Worktree execution mode (defaults to "shared" when unset). */
 	worktreeMode?: WorktreeMode;
 	/** Declared file/path scope for this job, if provided by the caller. */

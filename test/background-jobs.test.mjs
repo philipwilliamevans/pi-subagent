@@ -301,7 +301,7 @@ test("formatBackgroundCompletion shows cancelled state", async () => {
     const text = formatBackgroundCompletion(job);
     assert.match(text, /subjob_cancelled1/);
     assert.match(text, /was cancelled/);
-    assert.match(text, /call 1: cancelled/);
+    assert.match(text, /was cancelled\./);
   } finally {
     cleanup();
   }
@@ -336,9 +336,11 @@ test("formatBackgroundCompletion shows needs_input state", async () => {
     };
 
     const text = formatBackgroundCompletion(job);
-    assert.match(text, /is awaiting input/);
-    assert.match(text, /AWAITING_CHOICE/);
+    assert.match(text, /is awaiting your input/);
+    // Compact format shows the question without the marker
+    assert.match(text, /1\. Types/);
     assert.match(text, /subagent_continue/);
+    assert.doesNotMatch(text, /AWAITING_CHOICE/);
   } finally {
     cleanup();
   }
@@ -374,10 +376,10 @@ test("formatBackgroundCompletion hides marker plumbing for interactive jobs", as
     };
 
     const text = formatBackgroundCompletion(job);
-    assert.match(text, /is awaiting input/);
-    assert.match(text, /Waiting on call 0 for user direction/);
+    assert.match(text, /is awaiting your input/);
     assert.match(text, /Which direction should I inspect\?/);
     assert.doesNotMatch(text, /AWAITING_SUBAGENT_INPUT/);
+    assert.doesNotMatch(text, /Waiting on call/);
   } finally {
     cleanup();
   }
@@ -879,10 +881,14 @@ test("formatBackgroundCompletion shows success state", async () => {
 
     const text = formatBackgroundCompletion(job);
     assert.match(text, /subjob_test123/);
-    assert.match(text, /completed successfully/);
+    assert.match(text, /completed\./);
     assert.match(text, /explorer/);
-    assert.match(text, /call 1: completed/);
-    assert.match(text, /Found 5 test files/);
+    // Compact format shows aggregated result, not per-call status
+    assert.match(text, /Result: 1\/1 calls completed/);
+    assert.match(text, /Artifacts: result.md available/);
+    assert.match(text, /subagent_result/);
+    // Compact format does NOT include output excerpts
+    assert.doesNotMatch(text, /Found 5 test files/);
   } finally {
     cleanup();
   }
@@ -910,10 +916,13 @@ test("formatBackgroundCompletion shows failure state", async () => {
 
     const text = formatBackgroundCompletion(job);
     assert.match(text, /subjob_bad456/);
-    assert.match(text, /completed with errors/);
+    assert.match(text, /failed\./);
     assert.match(text, /fixer/);
-    assert.match(text, /call 1: failed/);
-    assert.match(text, /Unknown file/);
+    // Compact format shows aggregated result, not per-call status
+    assert.match(text, /Result: 0\/1 calls completed/);
+    // job.error is set by the background job runner (not from result fields)
+    // The compact format checks job.error; when absent, rely on Result line
+    assert.match(text, /subagent_peek/);
   } finally {
     cleanup();
   }
@@ -937,7 +946,7 @@ test("formatBackgroundCompletion shows error when job has error but no results",
 
     const text = formatBackgroundCompletion(job);
     assert.match(text, /subjob_crash789/);
-    assert.match(text, /completed with errors/);
+    assert.match(text, /failed\./);
     assert.match(text, /Error: Child process crashed/);
   } finally {
     cleanup();
@@ -953,8 +962,10 @@ test("formatBackgroundCompletion handles empty results gracefully", async () => 
 
     const text = formatBackgroundCompletion(job);
     assert.match(text, /subjob_empty/);
-    assert.match(text, /completed successfully/);
+    assert.match(text, /completed\./);
+    // Compact format does not have per-call lines
     assert.doesNotMatch(text, /call 1/);
+    assert.doesNotMatch(text, /Result:/);
   } finally {
     cleanup();
   }
@@ -1001,7 +1012,7 @@ test("renderBackgroundResult shows the started message", async () => {
 // FormatBackgroundCompletion — new excerpt features
 // ---------------------------------------------------------------------------
 
-test("formatBackgroundCompletion shows tool call count and output size", async () => {
+test("formatBackgroundCompletion shows tool call count", async () => {
   const { moduleUrl, cleanup } = createTestableRenderModule();
   try {
     const { formatBackgroundCompletion } = await import(moduleUrl);
@@ -1026,15 +1037,16 @@ test("formatBackgroundCompletion shows tool call count and output size", async (
     };
 
     const text = formatBackgroundCompletion(job);
-    assert.match(text, /call 1: completed/);
-    assert.match(text, /1 tool call/);
-    assert.match(text, /output\)/);
+    // Compact format shows aggregated tool call count, not per-call status
+    assert.match(text, /1 tool calls/);
+    // Compact format does NOT include output excerpts
+    assert.doesNotMatch(text, /Found 2 TypeScript files/);
   } finally {
     cleanup();
   }
 });
 
-test("formatBackgroundCompletion does not truncate output under 2000 chars", async () => {
+test("formatBackgroundCompletion does not include output excerpts", async () => {
   const { moduleUrl, cleanup } = createTestableRenderModule();
   try {
     const { formatBackgroundCompletion } = await import(moduleUrl);
@@ -1055,37 +1067,10 @@ test("formatBackgroundCompletion does not truncate output under 2000 chars", asy
     };
 
     const text = formatBackgroundCompletion(job);
-    assert.match(text, /completed successfully/);
+    assert.match(text, /completed\./);
+    // Compact format does NOT include any output excerpt, regardless of size
     assert.doesNotMatch(text, /Output truncated/);
-    assert.match(text, /A{500}/);
-  } finally {
-    cleanup();
-  }
-});
-
-test("formatBackgroundCompletion shows truncation notice for output over 2000 chars", async () => {
-  const { moduleUrl, cleanup } = createTestableRenderModule();
-  try {
-    const { formatBackgroundCompletion } = await import(moduleUrl);
-
-    const longOutput = "B".repeat(2500);
-    const job = {
-      id: "subjob_long",
-      createdAt: Date.now() - 5000,
-      updatedAt: Date.now(),
-      status: "completed",
-      onComplete: "trigger",
-      calls: [{ index: 0, agent: "explorer", prompt: "Long task", effectiveCwd: "/tmp", initialContext: "empty" }],
-      results: [{
-        callIndex: 0, agent: "explorer", agentSource: "user", prompt: "Long task", initialContext: "empty",
-        exitCode: 0, messages: [{ role: "assistant", content: [{ type: "text", text: longOutput }], timestamp: 1 }],
-        stderr: "", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
-      }],
-    };
-
-    const text = formatBackgroundCompletion(job);
-    assert.match(text, /Output truncated/);
-    assert.match(text, /subagent_result/);
+    assert.doesNotMatch(text, /A{10,}/);
   } finally {
     cleanup();
   }
@@ -1909,7 +1894,8 @@ test("formatBackgroundCompletion shows worktree mode", async () => {
 
     const text = formatBackgroundCompletion(job);
     assert.match(text, /subjob_done_wt/);
-    assert.match(text, /\[isolated worktree\]/);
+    assert.match(text, /isolated worktree/);
+    assert.match(text, /completed in an isolated worktree/);
   } finally {
     cleanup();
   }

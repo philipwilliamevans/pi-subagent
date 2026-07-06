@@ -175,8 +175,26 @@ running background subagent is currently doing.
 Cancel a running job with \`subagent_cancel\` (requires \`confirm: true\`).
 
 Retrieve the full output from a completed job using \`subagent_result\`.
-The auto-injected message includes a compact excerpt; use \`subagent_result\`
-when you need the complete response text.
+The auto-injected completion message is a **compact notification** — it shows
+only the job ID, status, agents, duration, and a summary of results.
+**Do not quote or summarize full result text from the notification.**
+Use \`subagent_result\` when you or the user needs the complete response text,
+tool call trace, or specific details.
+Treat completion notifications as state changes, not as reports.
+
+**When you use \`subagent_result\`, do not dump the full output into your response.**
+Read the results for your own context, then present a **concise summary** of key
+findings in your own words. If the user asks for specific details, share targeted
+excerpts — never the full verbatim report.
+
+**Per-call completion:** Multi-call background jobs fire a completion
+notification as each individual call finishes, not just when all calls
+are done. The per-call message tells you which call completed and its
+result. When all calls finish, a final job-level message gives the
+aggregate summary.
+You can inspect individual call results immediately via \`subagent_result\`
+with \`callIndex\`. Use \`subagent_status\` to see which calls are still
+running.
 
 For interactive background jobs, set top-level \`interactive: true\`.
 The extension will instruct the subagent how to pause for user direction.
@@ -313,6 +331,9 @@ export function formatSubagentStartToolDescription(): string {
     "",
     "Agent behavior:",
     "- After starting background jobs, end your turn. Do not poll. The auto-injected completion message will deliver results.",
+    "- For multi-call jobs, each call fires its own per-call completion message when it finishes,",
+    "  so you can act on early results while waiting for remaining calls.",
+    "- A final job-level message arrives when all calls are done.",
     "",
     "Shared-worktree safety:",
     "  - Use \`subagent_status\` to check running jobs before making parent edits.",
@@ -366,9 +387,10 @@ export function formatSubagentResultToolDescription(): string {
   return [
     "Retrieve the full output from a completed or parked background subagent job.",
     "",
-    "Use this tool when the auto-injected completion message excerpt",
-    "was truncated or you need the complete response text from a",
-    "finished subagent.",
+    "Use this tool when you need to read the complete response text from a",
+    "finished subagent. **Do not dump the full output verbatim into your response.**",
+    "Read it for context, then present a concise summary of key findings to the user.",
+    "If the user asks for specific details, share targeted excerpts — not the full report.",
     "",
     "By default returns only the final assistant text (tool calls excluded).",
     "Set includeToolCalls to true to see the full tool call trace.",
